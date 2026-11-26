@@ -42,6 +42,9 @@ BARRIER_CLEARANCE_WEIGHT = 0.3
 ROAD_DISTANCE_SCALE_M = 300.0
 BARRIER_DISTANCE_SCALE_M = 50.0
 
+SCHOOL_SECTOR_ROWS = 3
+SCHOOL_SECTOR_COLUMNS = 4
+
 
 class CoordinateMode(StrEnum):
     LOCAL = "local"
@@ -215,3 +218,16 @@ class RoadNetwork:
     new_roads: NDArray[np.bool_]
     road_mask: NDArray[np.bool_]
     axis_offsets: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SchoolReserve:
+    """До одной одноклеточной площадки в каждом из 3×4 секторов.
+
+    coordinates отсортированы по строке и столбцу; mask исключает площадки
+    из будущего размещения домов. Резерв ещё не означает открытую школу.
+    Массив, возвращаемый reserve_school_sites, защищён от записи.
+    """
+
+    coordinates: tuple[tuple[int, int], ...]
+    mask: NDArray[np.bool_]

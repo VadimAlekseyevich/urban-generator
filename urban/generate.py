@@ -1,16 +1,19 @@
 """Стадии генерации на неизменяемой исходной территории."""
 
 import numpy as np
-from scipy.ndimage import binary_propagation, distance_transform_edt, generate_binary_structure
+from scipy.ndimage import binary_dilation, binary_propagation, distance_transform_edt, generate_binary_structure
 
 from urban.model import (
     BARRIER_CLEARANCE_WEIGHT,
     BARRIER_DISTANCE_SCALE_M,
     ROAD_DISTANCE_SCALE_M,
     ROAD_PROXIMITY_WEIGHT,
+    SCHOOL_SECTOR_COLUMNS,
+    SCHOOL_SECTOR_ROWS,
     ClassCode,
     RoadNetwork,
     Scenario,
+    SchoolReserve,
     Suitability,
     Terrain,
 )
@@ -69,3 +72,37 @@ def generate_roads(terrain: Terrain, scenario: Scenario) -> RoadNetwork:
     road_mask.setflags(write=False)
     new_roads.setflags(write=False)
     return RoadNetwork(suitability, new_roads, road_mask, (row_offset, column_offset))
+
+
+def reserve_school_sites(roads: RoadNetwork) -> SchoolReserve:
+    """Резерв площадок по §4, шаг 3 DESIGN.md, независимо от бюджета.
+
+    Каждая площадка свободна после роста улиц и соседствует с достигнутой
+    дорогой по стороне. Строки делятся на 3 группы, столбцы — на 4;
+    при остатке первые группы на одну ячейку шире (np.array_split).
+    В каждом секторе максимум S выбирается в построчном порядке.
+    """
+    near_road = binary_dilation(roads.road_mask, structure=generate_binary_structure(2, 1))
+    candidates = roads.suitability.free_mask & ~roads.road_mask & near_road
+    height, width = candidates.shape
+    row_groups = np.array_split(np.arange(height), SCHOOL_SECTOR_ROWS)
+    column_groups = np.array_split(np.arange(width), SCHOOL_SECTOR_COLUMNS)
+    mask = np.zeros_like(candidates)
+    coordinates = []
+    for rows in row_groups:
+        for columns in column_groups:
+            if not rows.size or not columns.size:
+                continue
+            row_start, column_start = int(rows[0]), int(columns[0])
+            sector = np.s_[row_start:int(rows[-1]) + 1, column_start:int(columns[-1]) + 1]
+            positions = np.argwhere(candidates[sector])
+            if not positions.size:
+                continue
+            scores = roads.suitability.scores[sector]
+            best = int(np.argmax(scores[positions[:, 0], positions[:, 1]]))
+            row, column = positions[best]
+            coordinate = (row_start + int(row), column_start + int(column))
+            coordinates.append(coordinate)
+            mask[coordinate] = True
+    mask.setflags(write=False)
+    return SchoolReserve(tuple(sorted(coordinates)), mask)
