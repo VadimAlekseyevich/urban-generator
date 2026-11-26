@@ -564,3 +564,27 @@ def test_failed_school_calculation_preserves_pair_and_source_change_clears_it(mo
     app.radio[0].set_value("Свой TIFF").run()
     assert app.session_state.building_plan is None
     assert app.session_state.school_allocation is None
+
+
+def test_invalid_result_cannot_replace_verified_report(monkeypatch):
+    import urban.report
+
+    app = generated_demo_app()
+    before = app.session_state.verified_report
+    assert before.metrics.violations_m2 == before.metrics.disconnected_road_cells == 0
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Нарушения запретов, м²"] == "0"
+    assert metrics["Несвязанные новые дороги, ячеек"] == "0"
+
+    def fail(*args, **kwargs):
+        raise urban.report.ReportValidationError("Контрольное нарушение")
+
+    monkeypatch.setattr(urban.report, "validate_result", fail)
+    app.number_input(key="seed").set_value(43)
+    app.button[0].click().run()
+    assert not app.exception
+    assert any("Внутренняя проверка проекта не пройдена" in item.value for item in app.error)
+    assert app.session_state.verified_report is before
+    assert app.session_state.building_plan.scenario.seed == 42
+    app.radio[0].set_value("Свой TIFF").run()
+    assert app.session_state.verified_report is None

@@ -9,10 +9,10 @@ import streamlit as st
 from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
 from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
-from urban.services import SchoolAllocation, calculate_school_services
+from urban.services import calculate_school_services
 from urban.report import (
     SCHOOL_LEGEND, INPUT_LEGEND, building_rows, school_project_image,
-    school_deficit_reasons, school_rows, terrain_areas, terrain_image,
+    ReportValidationError, VerifiedReport, school_rows, terrain_areas, terrain_image, validate_result,
 )
 
 
@@ -29,22 +29,24 @@ def show_legend(legend: dict) -> None:
         )
 
 
-def show_school_results(allocation: SchoolAllocation) -> None:
+def show_school_results(report: VerifiedReport) -> None:
+    allocation = report.allocation
+    metrics = report.metrics
     st.subheader("Школы и доступность")
     st.caption("Спрос и обслуживание относятся только к новым жителям. Свободные места существующих школ не учитываются.")
     columns = st.columns(3)
-    columns[0].metric("Спрос, мест", allocation.demand)
-    columns[1].metric("Обслужено, мест", allocation.served)
-    columns[2].metric("Дефицит, мест", allocation.deficit)
-    coverage = f"{100 * allocation.served / allocation.demand:.2f}%" if allocation.demand else "нет спроса"
+    columns[0].metric("Спрос, мест", metrics.school_demand)
+    columns[1].metric("Обслужено, мест", metrics.school_served)
+    columns[2].metric("Дефицит, мест", metrics.school_deficit)
+    coverage = f"{metrics.school_coverage_percent:.2f}%" if metrics.school_coverage_percent is not None else "нет спроса"
     columns = st.columns(2)
     columns[0].metric("Покрытие спроса", coverage)
-    columns[1].metric("Открыто школ, шт.", len(allocation.schools))
-    no_route, no_capacity = school_deficit_reasons(allocation)
+    columns[1].metric("Открыто школ, шт.", metrics.opened_schools)
+    no_route, no_capacity = metrics.no_route_places, metrics.no_capacity_places
     columns = st.columns(2)
     columns[0].metric("Нет школы в пределах пути, мест", no_route)
     columns[1].metric("Не хватило мест в достижимой школе", no_capacity)
-    if allocation.deficit:
+    if metrics.school_deficit:
         st.info("Дефицит: нет доступной открытой школы в пределах сетевого порога "
                 f"— {no_route} мест; не хватило вместимости достижимых школ — {no_capacity} мест.")
     if allocation.schools:
@@ -105,6 +107,7 @@ def main() -> None:
         st.session_state.scale_confirmed = False
         st.session_state.building_plan = None
         st.session_state.school_allocation = None
+        st.session_state.verified_report = None
 
     if data is None:
         st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
@@ -204,14 +207,19 @@ def main() -> None:
             )
             plan = generate_buildings(terrain, scenario)
             allocation = calculate_school_services(plan)
+            report = validate_result(plan, allocation)
+        except ReportValidationError as error:
+            st.error(f"Внутренняя проверка проекта не пройдена: {error}.")
         except ValueError:
             st.error("Не удалось сгенерировать проект. Проверьте параметры и повторите расчёт.")
         else:
             st.session_state.building_plan = plan
             st.session_state.school_allocation = allocation
+            st.session_state.verified_report = report
 
-    plan = st.session_state.get("building_plan")
-    allocation = st.session_state.get("school_allocation")
+    report = st.session_state.get("verified_report")
+    plan = report.plan if report is not None else None
+    allocation = report.allocation if report is not None else None
     with map_container:
         left, right = st.columns(2)
         with left:
@@ -234,7 +242,8 @@ def main() -> None:
 
     if plan is not None:
         used = plan.scenario
-        count = int(plan.roads.new_roads.sum())
+        metrics = report.metrics
+        count = metrics.new_road_cells
         st.caption(
             f"Параметры выполненного расчёта: цель {used.target_population} чел., "
             f"этажность {used.floors}, шаг улиц {used.street_spacing_cells} ячеек "
@@ -243,18 +252,18 @@ def main() -> None:
             f"предельный путь {used.max_school_distance_m:g} м."
         )
         st.metric("Новые улицы, ячеек", count)
-        st.metric("Площадь новых улиц, м²", f"{count * plan.terrain.cell_area_m2:g}")
+        st.metric("Площадь новых улиц, м²", f"{metrics.new_road_area_m2:g}")
         if count == 0:
             st.info("Нет достижимых свободных ячеек на осях новых улиц.")
         st.subheader("Прирост населения")
         columns = st.columns(3)
-        columns[0].metric("Новые дома, шт.", len(plan.buildings))
+        columns[0].metric("Новые дома, шт.", metrics.new_buildings)
         columns[1].metric("Целевой прирост, чел.", used.target_population)
-        columns[2].metric("Фактический прирост, чел.", plan.population)
-        delta = plan.population - used.target_population
+        columns[2].metric("Фактический прирост, чел.", metrics.population)
+        delta = metrics.population_delta
         columns = st.columns(2)
         columns[0].metric("Отклонение от цели, чел.", f"{delta:+d}")
-        columns[1].metric("Недобор, чел.", max(0, -delta))
+        columns[1].metric("Недобор, чел.", metrics.population_shortfall)
         if plan.stop_reason == "target_reached":
             st.success("Причина остановки: целевой прирост достигнут.")
         else:
@@ -265,7 +274,16 @@ def main() -> None:
         if plan.buildings:
             with st.expander("Новые дома: параметры"):
                 st.dataframe(building_rows(plan), hide_index=True)
-        show_school_results(allocation)
+        show_school_results(report)
+        st.subheader("Проверка ограничений")
+        columns = st.columns(2)
+        columns[0].metric("Нарушения запретов, м²", f"{metrics.violations_m2:g}")
+        columns[1].metric("Несвязанные новые дороги, ячеек", metrics.disconnected_road_cells)
+        columns = st.columns(2)
+        columns[0].metric("Площадь пятен домов, м²", f"{metrics.building_area_m2:g}")
+        developed = f"{metrics.developed_percent:.2f}%" if metrics.developed_percent is not None else "нет данных"
+        columns[1].metric("Освоение свободной земли", developed)
+        st.success("Жёсткие ограничения проекта проверены.")
 
 
 if __name__ == "__main__":
