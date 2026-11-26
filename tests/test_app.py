@@ -588,3 +588,116 @@ def test_invalid_result_cannot_replace_verified_report(monkeypatch):
     assert app.session_state.building_plan.scenario.seed == 42
     app.radio[0].set_value("Свой TIFF").run()
     assert app.session_state.verified_report is None
+
+
+def test_compare_budgets_and_download_completed_reports(monkeypatch):
+    import csv
+    import json
+    from io import StringIO
+    from zipfile import ZipFile
+
+    downloads = {}
+    original = st.download_button
+
+    def capture(label, data, **kwargs):
+        downloads[kwargs["file_name"]] = data
+        return original(label, data, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", capture)
+    app = generated_demo_app()
+    a = app.session_state.verified_report
+    app.button(key="pin_variant_a").click().run()
+    assert app.session_state.variant_a is a
+    assert app.session_state.variant_b is None
+    assert "comparison.csv" not in downloads
+    a_zip = app.session_state.variant_a_zip
+    app.number_input(key="school_budget").set_value(0)
+    assert app.session_state.variant_b is None
+    app.button[0].click().run()
+    assert not app.exception
+    b = app.session_state.variant_b
+    assert b is app.session_state.verified_report
+    assert a.plan.scenario.school_budget == 1 and b.plan.scenario.school_budget == 0
+    assert a.metrics.population == b.metrics.population == 608
+    assert a.metrics.school_served > b.metrics.school_served == 0
+    assert len(app.get("image")) == 4
+    np.testing.assert_array_equal(a.plan.building_ids, b.plan.building_ids)
+    np.testing.assert_array_equal(a.plan.roads.new_roads, b.plan.roads.new_roads)
+    frame = app.dataframe[-1].value.set_index("Показатель")
+    assert frame.loc["Фактический прирост", "Δ (B − A)"] == 0
+    assert frame.loc["Обслужено", "A"] == a.metrics.school_served
+    assert frame.loc["Обслужено", "B"] == 0
+    assert frame.loc["Обслужено", "Δ (B − A)"] == -a.metrics.school_served
+
+    # Проверяем байты, переданные именно кнопкам загрузки.
+    with ZipFile(BytesIO(downloads["result.zip"])) as archive:
+        meta = json.loads(archive.read("metrics.json"))
+        assert meta["parameters"]["school_budget"] == 0
+        assert meta["metrics"]["population"] == b.metrics.population
+        assert meta["metrics"]["school_served"] == 0
+    with ZipFile(BytesIO(downloads["result_A.zip"])) as archive:
+        meta = json.loads(archive.read("metrics.json"))
+        assert meta["parameters"]["school_budget"] == 1
+        assert meta["metrics"]["school_served"] == a.metrics.school_served
+    rows = {r["metric"]: r for r in csv.DictReader(StringIO(downloads["comparison.csv"].decode()))}
+    assert int(rows["school_served"]["delta"]) == -a.metrics.school_served
+    assert downloads["result_A.zip"] == a_zip
+    previous_zip = app.session_state.result_zip
+    app.number_input(key="school_budget").set_value(2)
+    app.download_button(key="download_result_zip").click().run()
+    assert not app.exception
+    assert app.session_state.result_zip == previous_zip
+    assert app.session_state.variant_b is b
+    assert app.session_state.variant_a is a
+    app.button(key="clear_comparison").click().run()
+    assert app.session_state.variant_a is None and app.session_state.variant_b is None
+    assert app.session_state.verified_report is b
+
+
+def test_comparison_reset_on_scale_change():
+    app = own_file_app(DEMO_PATH.read_bytes())
+    app.radio(key="coordinate_selection").set_value("Локальные координаты").run()
+    app.number_input(key="local_scale").set_value(10).run()
+    # Для GeoTIFF требуется явный сброс привязки.
+    app.checkbox(key="discard_georeferencing").check().run()
+    app.checkbox(key="legend_confirmed").check().run()
+    app.checkbox(key="scale_confirmed").check().run()
+    app.button[0].click().run()
+    assert not app.exception
+    app.button(key="pin_variant_a").click().run()
+    app.number_input(key="school_budget").set_value(0)
+    app.button[0].click().run()
+    assert app.session_state.variant_b is not None
+    app.number_input(key="local_scale").set_value(5).run()
+    assert app.session_state.variant_a is None
+    assert app.session_state.variant_b is None
+    assert app.session_state.verified_report is None
+    assert app.session_state.result_zip is None
+    assert app.session_state.variant_a_zip is None
+
+
+def test_failed_regeneration_preserves_comparison_and_downloads(monkeypatch):
+    import urban.services
+
+    app = generated_demo_app()
+    app.button(key="pin_variant_a").click().run()
+    a = app.session_state.variant_a
+    app.number_input(key="school_budget").set_value(0)
+    app.button[0].click().run()
+    b = app.session_state.variant_b
+    previous_zip = app.session_state.result_zip
+
+    def fail(*args, **kwargs):
+        raise ValueError("Контрольный сбой")
+
+    monkeypatch.setattr(urban.services, "calculate_school_services", fail)
+    app.number_input(key="school_budget").set_value(2)
+    app.button[0].click().run()
+    assert not app.exception and app.error
+    assert app.session_state.variant_a is a
+    assert app.session_state.variant_b is b
+    assert app.session_state.verified_report is b
+    assert app.session_state.result_zip == previous_zip
+    app.radio[0].set_value("Свой TIFF").run()
+    assert app.session_state.variant_a is None and app.session_state.variant_b is None
+    assert app.session_state.result_zip is None
