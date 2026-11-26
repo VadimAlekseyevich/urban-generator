@@ -5,6 +5,7 @@ from pathlib import Path
 from dataclasses import fields
 
 import streamlit as st
+from rasterio.errors import RasterioError
 
 from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
@@ -13,6 +14,7 @@ from urban.services import calculate_school_services
 from urban.report import (
     SCHOOL_LEGEND, INPUT_LEGEND, building_rows, school_project_image,
     ReportValidationError, VerifiedReport, school_rows, terrain_areas, terrain_image, validate_result,
+    comparison_rows, export_comparison_csv, export_result_zip,
 )
 
 
@@ -53,6 +55,87 @@ def show_school_results(report: VerifiedReport) -> None:
         st.dataframe(school_rows(allocation), hide_index=True)
     else:
         st.caption("Новые школы не открыты.")
+
+
+METRIC_LABELS = {
+    "violations_m2": "Нарушения запретов",
+    "disconnected_road_cells": "Несвязанные новые дороги",
+    "new_road_cells": "Новые улицы",
+    "new_road_area_m2": "Площадь новых улиц",
+    "new_buildings": "Новые дома",
+    "building_area_m2": "Площадь пятен домов",
+    "developed_area_m2": "Освоенная площадь",
+    "developed_percent": "Освоение свободной земли",
+    "target_population": "Целевой прирост",
+    "population": "Фактический прирост",
+    "population_delta": "Отклонение от цели",
+    "population_shortfall": "Недобор населения",
+    "school_demand": "Спрос на школьные места",
+    "school_served": "Обслужено",
+    "school_deficit": "Дефицит",
+    "school_coverage_percent": "Покрытие спроса",
+    "opened_schools": "Открыто школ",
+    "no_route_places": "Нет достижимой школы",
+    "no_capacity_places": "Не хватило мест",
+}
+
+
+def scenario_summary(report: VerifiedReport) -> str:
+    s = report.plan.scenario
+    return (
+        f"Цель {s.target_population} чел. · этажи {s.floors} · шаг улиц {s.street_spacing_cells} "
+        f"ячеек · бюджет школ {s.school_budget} · вместимость {s.school_capacity} мест · "
+        f"путь {s.max_school_distance_m:g} м · seed {s.seed}"
+    )
+
+
+def show_comparison(report: VerifiedReport) -> None:
+    st.subheader("Экспорт и сравнение вариантов")
+    st.download_button(
+        "Скачать ZIP текущего проекта", st.session_state.result_zip,
+        file_name="result.zip", mime="application/zip", key="download_result_zip", on_click="ignore",
+    )
+    if st.button("Зафиксировать вариант A", key="pin_variant_a"):
+        st.session_state.variant_a = report
+        st.session_state.variant_a_zip = st.session_state.result_zip
+        st.session_state.variant_b = None
+
+    a = st.session_state.get("variant_a")
+    b = st.session_state.get("variant_b")
+    if a is None:
+        st.caption("Зафиксируйте текущий проект как A, измените параметры и сгенерируйте вариант B.")
+        return
+    if st.button("Сбросить сравнение", key="clear_comparison"):
+        st.session_state.variant_a = None
+        st.session_state.variant_a_zip = None
+        st.session_state.variant_b = None
+        return
+    st.download_button(
+        "Скачать ZIP варианта A", st.session_state.variant_a_zip,
+        file_name="result_A.zip", mime="application/zip", key="download_variant_a", on_click="ignore",
+    )
+    if b is None:
+        st.info("Вариант A зафиксирован. Следующий успешный расчёт станет B.")
+        st.caption(scenario_summary(a))
+        return
+    rows = comparison_rows(a, b)
+    left, right = st.columns(2)
+    for column, label, variant in ((left, "A", a), (right, "B", b)):
+        with column:
+            st.markdown(f"**Вариант {label}**")
+            st.caption(scenario_summary(variant))
+            st.image(school_project_image(variant.plan, variant.allocation),
+                     alt=f"Карта варианта {label}", width="stretch", output_format="PNG")
+    st.caption("Разность = B − A. Для процентов разность в процентных пунктах. Пустое значение означает, что показатель не определён.")
+    st.dataframe([
+        {"Показатель": METRIC_LABELS[row["metric"]], "Единица": row["unit"],
+         "A": row["A"], "B": row["B"], "Δ (B − A)": row["delta"]}
+        for row in rows
+    ], hide_index=True)
+    st.download_button(
+        "Скачать comparison.csv", export_comparison_csv(a, b),
+        file_name="comparison.csv", mime="text/csv", key="download_comparison", on_click="ignore",
+    )
 
 
 def main() -> None:
@@ -108,6 +191,10 @@ def main() -> None:
         st.session_state.building_plan = None
         st.session_state.school_allocation = None
         st.session_state.verified_report = None
+        st.session_state.result_zip = None
+        st.session_state.variant_a = None
+        st.session_state.variant_a_zip = None
+        st.session_state.variant_b = None
 
     if data is None:
         st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
@@ -208,14 +295,18 @@ def main() -> None:
             plan = generate_buildings(terrain, scenario)
             allocation = calculate_school_services(plan)
             report = validate_result(plan, allocation)
+            result_zip = export_result_zip(report)
         except ReportValidationError as error:
             st.error(f"Внутренняя проверка проекта не пройдена: {error}.")
-        except ValueError:
+        except (ValueError, RasterioError, OSError):
             st.error("Не удалось сгенерировать проект. Проверьте параметры и повторите расчёт.")
         else:
             st.session_state.building_plan = plan
             st.session_state.school_allocation = allocation
             st.session_state.verified_report = report
+            st.session_state.result_zip = result_zip
+            if st.session_state.get("variant_a") is not None:
+                st.session_state.variant_b = report
 
     report = st.session_state.get("verified_report")
     plan = report.plan if report is not None else None
@@ -284,6 +375,7 @@ def main() -> None:
         developed = f"{metrics.developed_percent:.2f}%" if metrics.developed_percent is not None else "нет данных"
         columns[1].metric("Освоение свободной земли", developed)
         st.success("Жёсткие ограничения проекта проверены.")
+        show_comparison(report)
 
 
 if __name__ == "__main__":
