@@ -14,7 +14,10 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from examples.create_demo import DEMO_PATH
-from urban.report import road_project_classes, road_project_image, terrain_areas, terrain_image
+from urban.report import (
+    building_project_classes, building_project_image, road_project_classes,
+    road_project_image, terrain_areas, terrain_image,
+)
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -206,7 +209,7 @@ def generated_demo_app() -> AppTest:
     app.checkbox(key="legend_confirmed").check().run()
     app.button[0].click().run()
     assert not app.exception
-    assert app.session_state.road_run is not None
+    assert app.session_state.building_plan is not None
     return app
 
 
@@ -214,18 +217,18 @@ def test_generation_requires_confirmed_terrain() -> None:
     app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
     assert app.button[0].label == "Сгенерировать"
     assert app.button[0].disabled
-    assert app.session_state.road_run is None
+    assert app.session_state.building_plan is None
     app.checkbox(key="legend_confirmed").check().run()
     assert not app.button[0].disabled
-    assert app.session_state.road_run is None
+    assert app.session_state.building_plan is None
 
 
 def test_demo_generation_shows_two_maps_and_keeps_scenario() -> None:
     from scipy.ndimage import generate_binary_structure, label
 
     app = generated_demo_app()
-    run = app.session_state.road_run
-    terrain, roads, scenario = run["terrain"], run["roads"], run["scenario"]
+    run = app.session_state.building_plan
+    terrain, roads, scenario = run.terrain, run.roads, run.scenario
     assert scenario.seed == 42
     assert scenario.street_spacing_cells == 8
     assert len(app.get("image")) == 2
@@ -244,41 +247,45 @@ def test_demo_generation_shows_two_maps_and_keeps_scenario() -> None:
 
 def test_repeat_seed_42_and_change_spacing_through_form() -> None:
     app = generated_demo_app()
-    first = app.session_state.road_run["roads"].new_roads.copy()
+    first = app.session_state.building_plan.roads.new_roads.copy()
+    first_buildings = app.session_state.building_plan.buildings
+    first_ids = app.session_state.building_plan.building_ids.copy()
     app.button[0].click().run()
     assert not app.exception
-    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, first)
+    np.testing.assert_array_equal(app.session_state.building_plan.roads.new_roads, first)
+    assert app.session_state.building_plan.buildings == first_buildings
+    np.testing.assert_array_equal(app.session_state.building_plan.building_ids, first_ids)
     app.number_input(key="street_spacing_cells").set_value(5)
     app.button[0].click().run()
     assert not app.exception
-    assert app.session_state.road_run["scenario"].seed == 42
-    assert app.session_state.road_run["scenario"].street_spacing_cells == 5
-    assert not np.array_equal(app.session_state.road_run["roads"].new_roads, first)
+    assert app.session_state.building_plan.scenario.seed == 42
+    assert app.session_state.building_plan.scenario.street_spacing_cells == 5
+    assert not np.array_equal(app.session_state.building_plan.roads.new_roads, first)
 
 
 def test_form_edit_without_submit_preserves_completed_run_and_its_parameters() -> None:
     app = generated_demo_app()
-    first = app.session_state.road_run["roads"].new_roads.copy()
+    first = app.session_state.building_plan.roads.new_roads.copy()
     # Правка внутри st.form остаётся черновиком до нажатия кнопки.
     app.number_input(key="seed").set_value(43)
     assert not app.exception
-    assert app.session_state.road_run["scenario"].seed == 42
-    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, first)
+    assert app.session_state.building_plan.scenario.seed == 42
+    np.testing.assert_array_equal(app.session_state.building_plan.roads.new_roads, first)
     assert any("seed 42" in item.value for item in app.caption)
     app.button[0].click().run()
     assert not app.exception
-    assert app.session_state.road_run["scenario"].seed == 43
-    assert not np.array_equal(app.session_state.road_run["roads"].new_roads, first)
+    assert app.session_state.building_plan.scenario.seed == 43
+    assert not np.array_equal(app.session_state.building_plan.roads.new_roads, first)
 
 
 def test_new_source_clears_the_previous_road_project() -> None:
     app = generated_demo_app()
     app.radio[0].set_value("Свой TIFF").run()
-    assert app.session_state.road_run is None
+    assert app.session_state.building_plan is None
     assert not app.get("image")
     app.file_uploader[0].set_value(("demo.tif", DEMO_PATH.read_bytes(), "image/tiff")).run()
     assert not app.exception
-    assert app.session_state.road_run is None
+    assert app.session_state.building_plan is None
     assert app.button[0].disabled
     assert len(app.get("image")) == 1
 
@@ -287,18 +294,18 @@ def test_local_scale_change_clears_project_and_blocks_new_run() -> None:
     app = confirm_local(own_file_app(upload_bytes()))
     app.button[0].click().run()
     assert not app.exception
-    assert app.session_state.road_run["terrain"].pixel_size_m == 10
+    assert app.session_state.building_plan.terrain.pixel_size_m == 10
     app.number_input(key="local_scale").set_value(5).run()
     assert not app.exception
-    assert app.session_state.road_run is None
+    assert app.session_state.building_plan is None
     assert app.button[0].disabled
     assert len(app.get("image")) == 1
 
 
 def test_project_colors_and_scale_match_the_source_and_preserve_original_objects() -> None:
     app = generated_demo_app()
-    run = app.session_state.road_run
-    terrain, roads = run["terrain"], run["roads"]
+    run = app.session_state.building_plan
+    terrain, roads = run.terrain, run.roads
     before = terrain.classes.copy()
     project = road_project_classes(terrain, roads)
     np.testing.assert_array_equal(project[~roads.new_roads], before[~roads.new_roads])
@@ -319,7 +326,8 @@ def test_failed_regeneration_keeps_last_successful_scenario(monkeypatch) -> None
     import urban.generate
 
     app = generated_demo_app()
-    before = app.session_state.road_run["roads"].new_roads.copy()
+    before = app.session_state.building_plan.roads.new_roads.copy()
+    building_ids_before = app.session_state.building_plan.building_ids.copy()
 
     def fail(*args, **kwargs):
         raise ValueError("Контрольный сбой генерации")
@@ -328,9 +336,10 @@ def test_failed_regeneration_keeps_last_successful_scenario(monkeypatch) -> None
     app.number_input(key="seed").set_value(43)
     app.button[0].click().run()
     assert not app.exception
-    assert "Не удалось построить улицы" in app.error[0].value
-    assert app.session_state.road_run["scenario"].seed == 42
-    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, before)
+    assert "Не удалось сгенерировать проект" in app.error[0].value
+    assert app.session_state.building_plan.scenario.seed == 42
+    np.testing.assert_array_equal(app.session_state.building_plan.roads.new_roads, before)
+    np.testing.assert_array_equal(app.session_state.building_plan.building_ids, building_ids_before)
     assert len(app.get("image")) == 2
 
 
@@ -340,9 +349,14 @@ def test_occupied_map_displays_zero_new_roads_without_error() -> None:
     app.button[0].click().run()
     assert not app.exception
     assert not app.error
-    assert not app.session_state.road_run["roads"].new_roads.any()
+    assert not app.session_state.building_plan.roads.new_roads.any()
     assert len(app.get("image")) == 2
     assert any("Нет достижимых свободных ячеек" in item.value for item in app.info)
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Новые дома, шт."] == "0"
+    assert metrics["Фактический прирост, чел."] == "0"
+    assert metrics["Недобор, чел."] == "600"
+    assert "исчерпаны" in app.warning[0].value
 
 
 def test_form_accepts_maximum_seed_and_street_spacing() -> None:
@@ -351,5 +365,94 @@ def test_form_accepts_maximum_seed_and_street_spacing() -> None:
     app.number_input(key="street_spacing_cells").set_value(20)
     app.button[0].click().run()
     assert not app.exception
-    assert app.session_state.road_run["scenario"].seed == 2**32 - 1
-    assert app.session_state.road_run["scenario"].street_spacing_cells == 20
+    assert app.session_state.building_plan.scenario.seed == 2**32 - 1
+    assert app.session_state.building_plan.scenario.street_spacing_cells == 20
+
+
+def test_demo_houses_population_and_deviation_match_building_table() -> None:
+    app = generated_demo_app()
+    plan = app.session_state.building_plan
+    metrics = {item.label: item.value for item in app.metric}
+    assert plan.scenario.target_population == 600
+    assert plan.scenario.floors == 3
+    assert metrics["Новые дома, шт."] == "19"
+    assert metrics["Целевой прирост, чел."] == "600"
+    assert metrics["Фактический прирост, чел."] == "608"
+    assert metrics["Отклонение от цели, чел."] == "+8"
+    assert metrics["Недобор, чел."] == "0"
+    table = app.dataframe[1].value
+    assert len(table) == len(plan.buildings)
+    assert table["Жителей, чел."].sum() == plan.population == 608
+    assert table["ID"].nunique() == 19
+    assert set(table["Этажей"]) == {3}
+    assert any("Причина остановки: целевой прирост достигнут" in item.value for item in app.success)
+    assert not app.warning
+    assert any("5 — Новый дом" in item.value for item in app.markdown)
+
+
+def test_unattainable_population_shows_shortfall_and_stop_reason() -> None:
+    app = generated_demo_app()
+    app.number_input(key="target_population").set_value(20_000)
+    app.button[0].click().run()
+    assert not app.exception
+    plan = app.session_state.building_plan
+    metrics = {item.label: item.value for item in app.metric}
+    assert plan.stop_reason == "candidates_exhausted"
+    assert plan.population == sum(building.population for building in plan.buildings)
+    assert plan.population < 20_000
+    shortage = 20_000 - plan.population
+    assert int(metrics["Недобор, чел."]) == shortage
+    assert int(metrics["Отклонение от цели, чел."]) == -shortage
+    assert int(metrics["Фактический прирост, чел."]) == app.dataframe[1].value["Жителей, чел."].sum()
+    assert str(shortage) in app.warning[0].value
+    assert "площадки 2×2 у дорог исчерпаны" in app.warning[0].value
+
+
+def test_draft_population_and_floors_do_not_replace_completed_result() -> None:
+    app = generated_demo_app()
+    app.number_input(key="target_population").set_value(20_000)
+    app.number_input(key="floors").set_value(1)
+    assert app.session_state.building_plan.scenario.target_population == 600
+    assert app.session_state.building_plan.scenario.floors == 3
+    assert {item.label: item.value for item in app.metric}["Фактический прирост, чел."] == "608"
+    assert any("цель 600 чел., этажность 3" in item.value for item in app.caption)
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.building_plan.scenario.target_population == 20_000
+    assert app.session_state.building_plan.scenario.floors == 1
+    assert any("цель 20000 чел., этажность 1" in item.value for item in app.caption)
+
+
+def test_floor_change_recalculates_population_and_preserves_roads() -> None:
+    app = generated_demo_app()
+    roads_before = app.session_state.building_plan.roads.new_roads.copy()
+    app.number_input(key="floors").set_value(9)
+    app.button[0].click().run()
+    assert not app.exception
+    plan = app.session_state.building_plan
+    assert plan.population == 672
+    assert len(plan.buildings) == 7
+    assert all(building.floors == 9 for building in plan.buildings)
+    assert set(app.dataframe[1].value["Этажей"]) == {9}
+    np.testing.assert_array_equal(plan.roads.new_roads, roads_before)
+
+
+def test_building_project_preserves_source_and_uses_distinct_class_color() -> None:
+    app = generated_demo_app()
+    plan = app.session_state.building_plan
+    before = plan.terrain.classes.copy()
+    project = building_project_classes(plan)
+    houses = plan.building_ids > 0
+    assert np.all(project[houses] == 5)
+    assert np.all(project[plan.roads.new_roads] == 4)
+    unchanged = ~houses & ~plan.roads.new_roads
+    np.testing.assert_array_equal(project[unchanged], before[unchanged])
+    assert not project.flags.writeable
+    assert not np.shares_memory(project, plan.terrain.classes)
+    image = building_project_image(plan)
+    assert image.size == terrain_image(plan.terrain).size == (768, 768)
+    assert len(image.getcolors()) == 7
+    pixels = np.asarray(image)
+    enlarged_houses = np.repeat(np.repeat(houses, 8, axis=0), 8, axis=1)
+    assert np.all(pixels[enlarged_houses] == (22, 163, 74))
+    np.testing.assert_array_equal(plan.terrain.classes, before)

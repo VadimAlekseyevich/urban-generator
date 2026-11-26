@@ -3,7 +3,7 @@
 import numpy as np
 from PIL import Image
 
-from urban.model import ClassCode, RoadNetwork, Terrain
+from urban.model import BuildingPlan, ClassCode, RoadNetwork, Terrain
 
 
 # Подписи и цвета общие для карты и легенды интерфейса.
@@ -16,6 +16,7 @@ INPUT_LEGEND = {
 }
 
 ROAD_LEGEND = {**INPUT_LEGEND, ClassCode.NEW_ROAD: ("Новая улица", "#ef4444")}
+BUILDING_LEGEND = {**ROAD_LEGEND, ClassCode.NEW_BUILDING: ("Новый дом", "#16a34a")}
 
 
 def terrain_image(terrain: Terrain) -> Image.Image:
@@ -33,6 +34,27 @@ def road_project_classes(terrain: Terrain, roads: RoadNetwork) -> np.ndarray:
 
 def road_project_image(terrain: Terrain, roads: RoadNetwork) -> Image.Image:
     return _classes_image(road_project_classes(terrain, roads), ROAD_LEGEND)
+
+
+def building_project_classes(plan: BuildingPlan) -> np.ndarray:
+    """Проект с домами на отдельной копии исходного растра."""
+    project = plan.terrain.classes.copy()
+    project[plan.roads.new_roads] = ClassCode.NEW_ROAD
+    project[plan.building_ids > 0] = ClassCode.NEW_BUILDING
+    project.setflags(write=False)
+    return project
+
+
+def building_project_image(plan: BuildingPlan) -> Image.Image:
+    return _classes_image(building_project_classes(plan), BUILDING_LEGEND)
+
+
+def building_rows(plan: BuildingPlan) -> list[dict]:
+    return [{
+        "ID": building.id, "Строка": building.row, "Столбец": building.column,
+        "Этажей": building.floors, "Площадь пятна, м²": building.footprint_area_m2,
+        "Жителей, чел.": building.population,
+    } for building in plan.buildings]
 
 
 def _classes_image(classes: np.ndarray, legend: dict) -> Image.Image:
