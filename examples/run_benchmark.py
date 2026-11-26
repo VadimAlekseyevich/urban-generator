@@ -44,9 +44,9 @@ def large_demo_bytes() -> bytes:
     classes[:4, :4] = classes[-4:, :4] = ClassCode.NODATA
     classes[at(12):at(84), at(20)] = ClassCode.EXISTING_ROAD
     classes[at(48), at(8):at(49)] = ClassCode.EXISTING_ROAD
-    for r, c in ((18, 18), (30, 21), (42, 18), (49, 30), (68, 21)):
-        # Сохраняем соседство с вертикальной/горизонтальной исходной дорогой.
-        r, c = at(r), at(c)
+    for r, c in ((at(18), at(20)-2), (at(30), at(20)+1),
+                 (at(42), at(20)-2), (at(48)+1, at(30)), (at(68), at(20)+1)):
+        # Пятна 2×2 по-прежнему соседствуют с исходной дорогой.
         classes[r:r+2, c:c+2] = ClassCode.EXISTING_BUILDING
     with MemoryFile() as mem:
         with mem.open(driver="GTiff", height=size, width=size, count=1, dtype="uint8",
