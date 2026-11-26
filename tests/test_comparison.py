@@ -38,11 +38,9 @@ def test_school_budget_comparison():
 
 
 def test_undefined_metrics_are_blank_and_delta_is_undefined():
-    terrain = read_terrain(DEMO_PATH.read_bytes())
-    a = run(terrain, Scenario())
-    # Достаточно использовать отсутствующее значение одной стороны, чтобы
-    # проверить представление None в общем формате сравнения.
-    b = replace(a, metrics=replace(a.metrics, school_coverage_percent=None))
+    terrain = read_terrain(DEMO_PATH.read_bytes(), local_scale=5, discard_georeferencing=True)
+    a = run(terrain, Scenario(floors=3))
+    b = run(terrain, Scenario(floors=1))
     row = next(r for r in comparison_rows(a, b) if r["metric"] == "school_coverage_percent")
     assert row["A"] is not None and row["B"] is None and row["delta"] is None
     table = {r["metric"]: r for r in csv.DictReader(StringIO(export_comparison_csv(a, b).decode()))}
