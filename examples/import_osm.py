@@ -9,7 +9,7 @@ from time import monotonic
 from urban.osm_import import import_pbf, make_window
 
 
-def _import_with_progress(path, window, index):
+def _import_with_progress(path, window, index, threads):
     """Периодический сигнал ожидания; не выдаёт его за процент прогресса."""
     stop = Event()
     activity = monotonic()
@@ -29,7 +29,7 @@ def _import_with_progress(path, window, index):
     worker = Thread(target=heartbeat, daemon=True)
     worker.start()
     try:
-        return import_pbf(path, window, index=index, progress=report)
+        return import_pbf(path, window, index=index, progress=report, threads=threads)
     finally:
         stop.set()
         worker.join()
@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--pixel-size", type=float, default=10, help="Метры на пиксель, 5–10")
     parser.add_argument("--output", required=True, type=Path, help="Новый файл .tif")
     parser.add_argument("--index", default="flex_mem", help="Тип индекса Pyosmium (по умолчанию flex_mem)")
+    parser.add_argument("--threads", type=int, default=4, help="Потоки чтения PBF, 1–16")
     args = parser.parse_args()
     if args.output.suffix.lower() not in (".tif", ".tiff"):
         parser.error("Выход должен иметь расширение .tif или .tiff.")
@@ -54,7 +55,7 @@ def main() -> None:
         window = make_window(args.lon, args.lat, args.size, args.pixel_size)
         print(f"Читаем локальный PBF: {args.pbf.name}; окно {window.crs}, {window.size}×{window.size}.",
               flush=True)
-        data, meta = _import_with_progress(args.pbf, window, args.index)
+        data, meta = _import_with_progress(args.pbf, window, args.index, args.threads)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("xb") as f:
             f.write(data)
