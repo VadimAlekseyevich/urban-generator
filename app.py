@@ -6,10 +6,13 @@ from dataclasses import fields
 
 import streamlit as st
 
-from urban.generate import generate_roads
+from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
 from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
-from urban.report import INPUT_LEGEND, ROAD_LEGEND, road_project_image, terrain_areas, terrain_image
+from urban.report import (
+    BUILDING_LEGEND, INPUT_LEGEND, building_project_image, building_rows,
+    terrain_areas, terrain_image,
+)
 
 
 DEMO_PATH = Path(__file__).resolve().parent / "examples" / "demo.tif"
@@ -75,7 +78,7 @@ def main() -> None:
         st.session_state.input_identity = input_identity
         st.session_state.legend_confirmed = False
         st.session_state.scale_confirmed = False
-        st.session_state.road_run = None
+        st.session_state.building_plan = None
 
     if data is None:
         st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
@@ -124,8 +127,18 @@ def main() -> None:
 
     defaults = Scenario()
     specifications = {parameter.name: parameter for parameter in fields(Scenario)}
-    st.subheader("Параметры улиц")
-    with st.form("road_parameters"):
+    st.subheader("Параметры застройки")
+    with st.form("scenario_parameters"):
+        population_spec = specifications["target_population"].metadata
+        floors_spec = specifications["floors"].metadata
+        target_population = st.number_input(
+            "Целевой прирост, чел.", min_value=population_spec["min"], max_value=population_spec["max"],
+            value=defaults.target_population, step=1, key="target_population",
+        )
+        floors = st.number_input(
+            "Этажей в новом доме", min_value=floors_spec["min"], max_value=floors_spec["max"],
+            value=defaults.floors, step=1, key="floors",
+        )
         spacing_spec = specifications["street_spacing_cells"].metadata
         seed_spec = specifications["seed"].metadata
         spacing = st.number_input(
@@ -135,19 +148,22 @@ def main() -> None:
         seed = st.number_input(
             "Seed", min_value=seed_spec["min"], max_value=seed_spec["max"],
             value=defaults.seed, step=1, key="seed",
-            help="Одинаковые файл, масштаб, шаг улиц и seed дают одинаковый проект.",
+            help="Одинаковые файл, масштаб, параметры и seed дают одинаковый проект.",
         )
         submitted = st.form_submit_button("Сгенерировать", disabled=not st.session_state.terrain_ready)
     if submitted and st.session_state.terrain_ready:
         try:
-            scenario = Scenario(street_spacing_cells=spacing, seed=seed)
-            roads = generate_roads(terrain, scenario)
+            scenario = Scenario(
+                target_population=target_population, floors=floors,
+                street_spacing_cells=spacing, seed=seed,
+            )
+            plan = generate_buildings(terrain, scenario)
         except ValueError:
-            st.error("Не удалось построить улицы. Проверьте параметры и повторите расчёт.")
+            st.error("Не удалось сгенерировать проект. Проверьте параметры и повторите расчёт.")
         else:
-            st.session_state.road_run = {"terrain": terrain, "scenario": scenario, "roads": roads}
+            st.session_state.building_plan = plan
 
-    run = st.session_state.get("road_run")
+    plan = st.session_state.get("building_plan")
     with map_container:
         left, right = st.columns(2)
         with left:
@@ -157,29 +173,49 @@ def main() -> None:
                 width="stretch", output_format="PNG",
             )
         with right:
-            if run is None:
+            if plan is None:
                 show_legend(INPUT_LEGEND)
             else:
                 st.subheader("Проект")
                 st.image(
-                    road_project_image(run["terrain"], run["roads"]),
-                    alt="Проект с новыми улицами", width="stretch", output_format="PNG",
+                    building_project_image(plan),
+                    alt="Проект с новыми улицами и домами", width="stretch", output_format="PNG",
                 )
-        if run is not None:
-            show_legend(ROAD_LEGEND)
+        if plan is not None:
+            show_legend(BUILDING_LEGEND)
 
-    if run is not None:
-        used = run["scenario"]
-        count = int(run["roads"].new_roads.sum())
+    if plan is not None:
+        used = plan.scenario
+        count = int(plan.roads.new_roads.sum())
         st.caption(
-            f"Параметры выполненного расчёта: шаг улиц {used.street_spacing_cells} ячеек "
-            f"({used.street_spacing_cells * run['terrain'].pixel_size_m:g} м), seed {used.seed}."
+            f"Параметры выполненного расчёта: цель {used.target_population} чел., "
+            f"этажность {used.floors}, шаг улиц {used.street_spacing_cells} ячеек "
+            f"({used.street_spacing_cells * plan.terrain.pixel_size_m:g} м), seed {used.seed}."
         )
         st.metric("Новые улицы, ячеек", count)
-        st.metric("Площадь новых улиц, м²", f"{count * run['terrain'].cell_area_m2:g}")
+        st.metric("Площадь новых улиц, м²", f"{count * plan.terrain.cell_area_m2:g}")
         if count == 0:
             st.info("Нет достижимых свободных ячеек на осях новых улиц.")
-    st.caption("В этой версии рассчитываются улицы. Дома и школы пока недоступны.")
+        st.subheader("Прирост населения")
+        columns = st.columns(3)
+        columns[0].metric("Новые дома, шт.", len(plan.buildings))
+        columns[1].metric("Целевой прирост, чел.", used.target_population)
+        columns[2].metric("Фактический прирост, чел.", plan.population)
+        delta = plan.population - used.target_population
+        columns = st.columns(2)
+        columns[0].metric("Отклонение от цели, чел.", f"{delta:+d}")
+        columns[1].metric("Недобор, чел.", max(0, -delta))
+        if plan.stop_reason == "target_reached":
+            st.success("Причина остановки: целевой прирост достигнут.")
+        else:
+            st.warning(
+                f"Недобор — {-delta} чел. Причина остановки: подходящие свободные "
+                "площадки 2×2 у дорог исчерпаны с учётом школьного резерва."
+            )
+        if plan.buildings:
+            with st.expander("Новые дома: параметры"):
+                st.dataframe(building_rows(plan), hide_index=True)
+    st.caption("Школы и распределение школьных мест пока недоступны.")
 
 
 if __name__ == "__main__":
