@@ -199,3 +199,19 @@ class Suitability:
     road_distance_m: NDArray[np.float64]
     barrier_distance_m: NDArray[np.float64]
     scores: NDArray[np.float64]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RoadNetwork:
+    """Результат роста улиц для следующих стадий генерации.
+
+    new_roads — только новые ячейки, road_mask — старые и новые дороги.
+    axis_offsets хранит смещения строки и столбца. suitability сохраняет
+    результат первого шага без повторного расчёта. Массивы, возвращаемые
+    generate_roads, защищены от записи.
+    """
+
+    suitability: Suitability
+    new_roads: NDArray[np.bool_]
+    road_mask: NDArray[np.bool_]
+    axis_offsets: tuple[int, int]

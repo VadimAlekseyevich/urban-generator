@@ -1,15 +1,18 @@
-"""Пригодность: ручные расстояния, границы и сохранность исходных слоёв."""
+"""Пригодность и улицы: расстояния, связность и сохранность исходных слоёв."""
 
+from collections import deque
+from dataclasses import replace
 from hashlib import sha256
 from math import dist, sqrt
 
 import numpy as np
 import pytest
+from scipy.ndimage import generate_binary_structure, label
 
 from examples.create_demo import DEMO_PATH
-from urban.generate import calculate_suitability
+from urban.generate import calculate_suitability, generate_roads
 from urban.io import read_terrain
-from urban.model import ClassCode, CoordinateMode, Terrain
+from urban.model import ClassCode, CoordinateMode, Scenario, Terrain
 
 
 def terrain_from(classes, *, scale=10, mask=None) -> Terrain:
@@ -156,3 +159,155 @@ def test_demo_source_is_unchanged_and_stage_outputs_are_repeatable() -> None:
         with pytest.raises(ValueError, match="read-only"):
             array[0, 0] = 0
     assert first.free_mask.sum() == 8668
+
+
+def test_seed_42_roads_match_hand_drawn_grid() -> None:
+    classes = np.zeros((5, 7), dtype=np.uint8)
+    classes[3, 2] = ClassCode.EXISTING_ROAD
+    result = generate_roads(terrain_from(classes), Scenario(street_spacing_cells=5))
+    assert result.axis_offsets == (0, 3)
+    expected = np.array([
+        [1, 1, 1, 1, 1, 1, 1],
+        [0, 0, 0, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0],
+    ], dtype=bool)
+    np.testing.assert_array_equal(result.new_roads, expected)
+    expected[3, 2] = True
+    np.testing.assert_array_equal(result.road_mask, expected)
+
+
+@pytest.mark.parametrize("seed", [0, 42, 43, 2**32 - 1])
+@pytest.mark.parametrize("spacing", [5, 8, 20])
+def test_river_keeps_new_roads_on_the_original_bank(seed: int, spacing: int) -> None:
+    classes = np.zeros((20, 24), dtype=np.uint8)
+    classes[:, 12:14] = ClassCode.BLOCKED
+    classes[:, 4] = ClassCode.EXISTING_ROAD
+    terrain = terrain_from(classes)
+    scenario = Scenario(seed=seed, street_spacing_cells=spacing)
+    first = generate_roads(terrain, scenario)
+    second = generate_roads(terrain, scenario)
+    assert first.new_roads[:, :12].any()
+    assert not first.new_roads[:, 12:14].any()
+    assert not first.new_roads[:, 14:].any()
+    assert not first.new_roads[:, 4].any()
+    np.testing.assert_array_equal(first.new_roads, second.new_roads)
+    np.testing.assert_array_equal(first.road_mask, second.road_mask)
+
+
+def test_each_original_component_seeds_its_own_bank() -> None:
+    classes = np.zeros((20, 24), dtype=np.uint8)
+    classes[:, 12:14] = ClassCode.BLOCKED
+    classes[:, 4] = ClassCode.EXISTING_ROAD
+    classes[:, 18] = ClassCode.EXISTING_ROAD
+    result = generate_roads(terrain_from(classes), Scenario())
+    assert result.new_roads[:, :12].any()
+    assert result.new_roads[:, 14:].any()
+    assert not result.road_mask[:, 12:14].any()
+    assert result.road_mask[:, 4].all()
+    assert result.road_mask[:, 18].all()
+
+
+@pytest.mark.parametrize("barrier", [ClassCode.BLOCKED, ClassCode.NODATA, ClassCode.EXISTING_BUILDING])
+def test_barriers_stop_growth_along_a_single_axis(barrier: ClassCode) -> None:
+    result = generate_roads(terrain_from([[2, 0, barrier, 0, 0, 0, 0]]), Scenario(street_spacing_cells=5))
+    np.testing.assert_array_equal(result.new_roads, [[False, True, False, False, False, False, False]])
+
+
+def test_mask_hole_stops_road_growth() -> None:
+    terrain = terrain_from([[2, 0, 0, 0, 0, 0, 0]], mask=np.array([[True, True, False, True, True, True, True]]))
+    result = generate_roads(terrain, Scenario(street_spacing_cells=5))
+    np.testing.assert_array_equal(result.new_roads, [[False, True, False, False, False, False, False]])
+
+
+def test_diagonal_contact_does_not_connect_a_road() -> None:
+    scenario = Scenario(street_spacing_cells=5)
+    isolated = generate_roads(terrain_from([[0, 1], [1, 2]]), scenario)
+    assert not isolated.new_roads.any()
+    connected = generate_roads(terrain_from([[0, 0], [1, 2]]), scenario)
+    np.testing.assert_array_equal(connected.new_roads, [[True, True], [False, False]])
+
+
+def test_free_land_outside_axes_cannot_bridge_to_an_isolated_grid() -> None:
+    classes = np.zeros((5, 7), dtype=np.uint8)
+    classes[3, 1] = ClassCode.EXISTING_ROAD
+    result = generate_roads(terrain_from(classes), Scenario(street_spacing_cells=5))
+    assert not result.new_roads.any()
+    np.testing.assert_array_equal(result.road_mask, classes == ClassCode.EXISTING_ROAD)
+
+
+@pytest.mark.parametrize("classes", [[[2]], [[2, 3], [1, 255]]])
+def test_occupied_terrain_keeps_only_its_existing_roads(classes) -> None:
+    terrain = terrain_from(classes)
+    result = generate_roads(terrain, Scenario())
+    assert not result.new_roads.any()
+    np.testing.assert_array_equal(result.road_mask, terrain.classes == ClassCode.EXISTING_ROAD)
+
+
+def test_roads_match_independent_breadth_first_search() -> None:
+    fixture_rng = np.random.Generator(np.random.PCG64(2026))
+    classes = fixture_rng.choice([0, 1, 3, 255], size=(11, 13), p=[0.75, 0.1, 0.1, 0.05]).astype(np.uint8)
+    classes[2, 2] = classes[8, 10] = ClassCode.EXISTING_ROAD
+    terrain = terrain_from(classes)
+    scenario = Scenario(street_spacing_cells=5, seed=43)
+    result = generate_roads(terrain, scenario)
+    offsets = np.random.Generator(np.random.PCG64(scenario.seed)).integers(0, 5, size=2)
+    reached = classes == ClassCode.EXISTING_ROAD
+    queue = deque(map(tuple, np.argwhere(reached)))
+    while queue:
+        row, column = queue.popleft()
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            r, c = row + dr, column + dc
+            if not (0 <= r < 11 and 0 <= c < 13) or reached[r, c]:
+                continue
+            on_axis = r % 5 == offsets[0] or c % 5 == offsets[1]
+            if classes[r, c] == ClassCode.FREE and on_axis:
+                reached[r, c] = True
+                queue.append((r, c))
+    np.testing.assert_array_equal(result.road_mask, reached)
+    np.testing.assert_array_equal(result.new_roads, reached & (classes == ClassCode.FREE))
+
+
+def test_demo_road_components_have_an_original_road_and_source_is_unchanged() -> None:
+    terrain = read_terrain(DEMO_PATH.read_bytes())
+    before_classes, before_mask = terrain.classes.copy(), terrain.valid_mask.copy()
+    result = generate_roads(terrain, Scenario())
+    assert result.new_roads[:, :56].any()
+    assert not result.new_roads[:, 56:].any()
+    assert not result.new_roads[~result.suitability.free_mask].any()
+    components, count = label(result.road_mask, structure=generate_binary_structure(2, 1))
+    old_roads = terrain.classes == ClassCode.EXISTING_ROAD
+    for component in range(1, count + 1):
+        assert np.any((components == component) & old_roads)
+    np.testing.assert_array_equal(terrain.classes, before_classes)
+    np.testing.assert_array_equal(terrain.valid_mask, before_mask)
+    for array in (result.new_roads, result.road_mask):
+        assert not np.shares_memory(array, terrain.classes)
+        assert not np.shares_memory(array, terrain.valid_mask)
+        with pytest.raises(ValueError, match="read-only"):
+            array[0, 0] = False
+
+
+def test_seed_and_spacing_change_the_demo_grid_but_other_scenario_fields_do_not() -> None:
+    terrain = read_terrain(DEMO_PATH.read_bytes())
+    scenario = Scenario()
+    baseline = generate_roads(terrain, scenario)
+    other_seed = generate_roads(terrain, replace(scenario, seed=43))
+    other_spacing = generate_roads(terrain, replace(scenario, street_spacing_cells=5))
+    assert not np.array_equal(baseline.new_roads, other_seed.new_roads)
+    assert not np.array_equal(baseline.new_roads, other_spacing.new_roads)
+    other_parameters = replace(
+        scenario, target_population=20_000, floors=9,
+        school_budget=0, school_capacity=500, max_school_distance_m=2_000,
+    )
+    np.testing.assert_array_equal(baseline.new_roads, generate_roads(terrain, other_parameters).new_roads)
+
+
+def test_road_generation_does_not_touch_global_numpy_random_state() -> None:
+    before = np.random.get_state()
+    generate_roads(terrain_from([[2, 0, 0], [0, 0, 0]]), Scenario())
+    after = np.random.get_state()
+    assert before[0] == after[0]
+    np.testing.assert_array_equal(before[1], after[1])
+    assert before[2:] == after[2:]
