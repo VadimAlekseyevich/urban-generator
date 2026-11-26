@@ -1,4 +1,4 @@
-"""Дорожные пути до школьных площадок (§4, шаг 6 DESIGN.md)."""
+"""Дорожная доступность и распределение школьных мест (§4, шаг 6 DESIGN.md)."""
 
 from dataclasses import dataclass
 
@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from urban.model import BuildingPlan
+from urban.model import BuildingPlan, Scenario
 
 Coordinate = tuple[int, int]
 
@@ -87,3 +87,122 @@ def calculate_school_paths(plan: BuildingPlan) -> SchoolPaths:
         distances = (np.rint(network_distances[:, targets] / h) + 2) * h
     distances.setflags(write=False)
     return SchoolPaths(sites, building_ids, distances)
+
+
+@dataclass(frozen=True, slots=True)
+class SchoolAssignment:
+    """Назначенные ребёнку/детям дома места в одной школе."""
+
+    building_id: int
+    places: int
+    distance_m: float
+
+
+@dataclass(frozen=True, slots=True)
+class OpenSchool:
+    id: int
+    site: SchoolSite
+    capacity: int
+    assignments: tuple[SchoolAssignment, ...]
+
+    @property
+    def served(self) -> int:
+        return sum(a.places for a in self.assignments)
+
+    @property
+    def max_assigned_distance_m(self) -> float:
+        return max(a.distance_m for a in self.assignments)
+
+
+@dataclass(frozen=True, slots=True)
+class BuildingService:
+    building_id: int
+    demand: int
+    served: int
+    reachable_school: bool
+
+    @property
+    def remaining(self) -> int:
+        return self.demand - self.served
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SchoolAllocation:
+    paths: SchoolPaths
+    schools: tuple[OpenSchool, ...]
+    buildings: tuple[BuildingService, ...]
+
+    @property
+    def demand(self) -> int:
+        return sum(b.demand for b in self.buildings)
+
+    @property
+    def served(self) -> int:
+        return sum(b.served for b in self.buildings)
+
+    @property
+    def deficit(self) -> int:
+        return self.demand - self.served
+
+
+def allocate_school_places(
+    paths: SchoolPaths, demands: tuple[int, ...], scenario: Scenario,
+) -> SchoolAllocation:
+    """Жадный выбор по остаточному спросу, затем раздача мест по пути и ID.
+
+    demands соответствует столбцам paths.distances_m. Ничьи между площадками
+    разрешаются координатами, между домами — ID. Школы нумеруются в порядке
+    открытия. Дома могут получать места в нескольких школах, но не сверх
+    своего спроса. Площадки с нулевым выигрышем не открываются.
+    """
+    if len(demands) != len(paths.building_ids) or any(d < 0 for d in demands):
+        raise ValueError("Спрос должен соответствовать домам и быть неотрицательным")
+    if paths.distances_m.shape != (len(paths.sites), len(demands)):
+        raise ValueError("Размер матрицы путей не соответствует площадкам и домам")
+
+    remaining = np.array(demands, dtype=np.int64)
+    reachable = paths.reachable(scenario.max_school_distance_m)
+    schools = []
+    opened = set()
+    reachable_opened = np.zeros(len(demands), dtype=bool)
+    for _ in range(scenario.school_budget):
+        gains = np.minimum(scenario.school_capacity, reachable @ remaining)
+        candidates = [i for i, gain in enumerate(gains) if i not in opened and gain > 0]
+        if not candidates:
+            break
+        i = min(candidates, key=lambda j: (-gains[j], paths.sites[j].coordinate))
+        opened.add(i)
+        reachable_opened |= reachable[i]
+        available = scenario.school_capacity
+        assignments = []
+        order = sorted(
+            np.flatnonzero(reachable[i] & (remaining > 0)),
+            key=lambda j: (paths.distances_m[i, j], paths.building_ids[j]),
+        )
+        for j in order:
+            places = min(available, int(remaining[j]))
+            assignments.append(SchoolAssignment(
+                paths.building_ids[j], places, float(paths.distances_m[i, j]),
+            ))
+            remaining[j] -= places
+            available -= places
+            if available == 0:
+                break
+        schools.append(OpenSchool(
+            len(schools) + 1, paths.sites[i], scenario.school_capacity, tuple(assignments),
+        ))
+
+    buildings = tuple(
+        BuildingService(bid, int(demand), int(demand - left), bool(can_reach))
+        for bid, demand, left, can_reach in zip(
+            paths.building_ids, demands, remaining, reachable_opened, strict=True,
+        )
+    )
+    return SchoolAllocation(paths, tuple(schools), buildings)
+
+
+def calculate_school_services(plan: BuildingPlan) -> SchoolAllocation:
+    """Рассчитать школы для готовой застройки, не меняя улицы и дома."""
+    paths = calculate_school_paths(plan)
+    demands = tuple(b.school_demand for b in plan.buildings)
+    return allocate_school_places(paths, demands, plan.scenario)
