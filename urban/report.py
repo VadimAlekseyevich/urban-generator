@@ -1,17 +1,25 @@
 """Карты, независимая проверка результата и итоговые метрики."""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import csv
+from io import BytesIO, StringIO
+import json
+import warnings
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 from math import floor
 from numbers import Integral
 
 import numpy as np
 from scipy.ndimage import label
 from PIL import Image, ImageDraw
+from rasterio.errors import NotGeoreferencedWarning
+from rasterio.io import MemoryFile
 
 from urban.model import (
     AREA_PER_RESIDENT_M2, HOUSE_SIDE_CELLS, SCHOOLCHILD_FRACTION, USEFUL_AREA_FRACTION,
-    BuildingPlan, ClassCode, RoadNetwork, Terrain,
+    BARRIER_CLEARANCE_WEIGHT, BARRIER_DISTANCE_SCALE_M, ROAD_DISTANCE_SCALE_M,
+    ROAD_PROXIMITY_WEIGHT, BuildingPlan, ClassCode, CoordinateMode, RoadNetwork, Terrain,
 )
 from urban.services import SchoolAllocation
 
@@ -360,3 +368,127 @@ def validate_result(
         opened_schools=len(school_cells), no_route_places=no_route, no_capacity_places=no_capacity,
     )
     return VerifiedReport(plan, allocation, expected, metrics)
+
+
+# Версии формата и алгоритма, а не пакета Python (см. §3 и §5 DESIGN.md).
+SCHEMA_VERSION = 1
+ALGORITHM_VERSION = 1
+BUILDINGS_CSV_FIELDS = (
+    "id", "row", "column", "footprint_area_m2", "floors", "population",
+    "school_demand", "school_served",
+)
+
+
+def _export_metadata(report: VerifiedReport) -> dict:
+    plan = report.plan
+    terrain = plan.terrain
+    georeferenced = terrain.coordinate_mode == CoordinateMode.GEOREFERENCED
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "algorithm_version": ALGORITHM_VERSION,
+        "input_sha256": terrain.input_sha256,
+        "coordinate_mode": terrain.coordinate_mode.value,
+        "pixel_size_m": terrain.pixel_size_m,
+        "width": int(report.classes.shape[1]),
+        "height": int(report.classes.shape[0]),
+        "nodata": int(ClassCode.NODATA),
+        "crs": terrain.crs.to_string() if georeferenced else None,
+        "transform": list(terrain.transform)[:6] if georeferenced else None,
+        "local_origin_m": None if georeferenced else [0, 0],
+        "local_origin_corner": None if georeferenced else "lower_left",
+        "parameters": asdict(plan.scenario),
+        "seed": plan.scenario.seed,
+        "model_coefficients": {
+            "house_side_cells": HOUSE_SIDE_CELLS,
+            "useful_area_fraction": USEFUL_AREA_FRACTION,
+            "area_per_resident_m2": AREA_PER_RESIDENT_M2,
+            "schoolchild_fraction": SCHOOLCHILD_FRACTION,
+            "road_proximity_weight": ROAD_PROXIMITY_WEIGHT,
+            "barrier_clearance_weight": BARRIER_CLEARANCE_WEIGHT,
+            "road_distance_scale_m": ROAD_DISTANCE_SCALE_M,
+            "barrier_distance_scale_m": BARRIER_DISTANCE_SCALE_M,
+        },
+        "legend": {str(int(code)): {"label": name, "color": color}
+                   for code, (name, color) in SCHOOL_LEGEND.items()},
+        "metrics": asdict(report.metrics),
+        "metric_units": dict(METRIC_UNITS),
+        "population_stop_reason": plan.stop_reason,
+        "school_deficit_reasons": {
+            "no_route_places": report.metrics.no_route_places,
+            "no_capacity_places": report.metrics.no_capacity_places,
+        },
+        "schools": [{
+            "id": s.id, "row": s.site.coordinate[0], "column": s.site.coordinate[1],
+            "capacity": s.capacity, "served": s.served,
+            "utilization_percent": 100 * s.served / s.capacity,
+            "max_assigned_distance_m": s.max_assigned_distance_m,
+        } for s in report.allocation.schools],
+    }
+
+
+def _export_buildings_csv(report: VerifiedReport) -> bytes:
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=BUILDINGS_CSV_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    services = {b.building_id: b for b in report.allocation.buildings}
+    for b in sorted(report.plan.buildings, key=lambda b: b.id):
+        writer.writerow({
+            "id": b.id, "row": b.row, "column": b.column,
+            "footprint_area_m2": b.footprint_area_m2, "floors": b.floors,
+            "population": b.population, "school_demand": b.school_demand,
+            "school_served": services[b.id].served,
+        })
+    return output.getvalue().encode("utf-8")
+
+
+def _export_tiff(report: VerifiedReport) -> bytes:
+    terrain = report.plan.terrain
+    height, width = report.classes.shape
+    profile = {
+        "driver": "GTiff", "height": height, "width": width, "count": 1,
+        "dtype": "uint8", "nodata": int(ClassCode.NODATA), "compress": "deflate",
+    }
+    if terrain.coordinate_mode == CoordinateMode.GEOREFERENCED:
+        profile.update(crs=terrain.crs, transform=terrain.transform)
+    # Локальный TIFF намеренно без пространственной привязки: масштаб и
+    # начало координат находятся в JSON, а не в фиктивной CRS.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with MemoryFile() as memory:
+            with memory.open(**profile) as dataset:
+                dataset.write(report.classes, 1)
+                dataset.set_band_description(1, "Urban Generator result classes")
+                dataset.write_colormap(1, {
+                    int(code): (*bytes.fromhex(color[1:]), 255)
+                    for code, (_, color) in SCHOOL_LEGEND.items()
+                })
+                dataset.update_tags(
+                    schema_version=str(SCHEMA_VERSION),
+                    algorithm_version=str(ALGORITHM_VERSION),
+                    coordinate_mode=terrain.coordinate_mode.value,
+                    legend=json.dumps(_export_metadata(report)["legend"], ensure_ascii=False),
+                )
+            return memory.read()
+
+
+def export_result_zip(report: VerifiedReport) -> bytes:
+    """Экспорт одного завершённого запуска, без UI и временных файлов.
+
+    Повторно проверяем исходные слои, назначения, готовый растр и метрики:
+    вручную изменённый VerifiedReport не должен обходить валидатор.
+    """
+    checked = validate_result(report.plan, report.allocation, report.classes)
+    _require(report.metrics == checked.metrics, "Метрики отчёта не соответствуют результату")
+    metadata = json.dumps(_export_metadata(checked), ensure_ascii=False, indent=2,
+                          allow_nan=False).encode("utf-8") + b"\n"
+    members = {
+        "result.tif": _export_tiff(checked),
+        "metrics.json": metadata,
+        "buildings.csv": _export_buildings_csv(checked),
+    }
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        for name, data in members.items():
+            # Фиксированная дата ZIP исключает зависимость от времени выгрузки.
+            archive.writestr(ZipInfo(name), data, compress_type=ZIP_DEFLATED)
+    return output.getvalue()
