@@ -16,7 +16,8 @@ from streamlit.testing.v1 import AppTest
 from examples.create_demo import DEMO_PATH
 from urban.report import (
     building_project_classes, building_project_image, road_project_classes,
-    road_project_image, terrain_areas, terrain_image,
+    road_project_image, school_project_classes, school_project_image,
+    school_deficit_reasons, terrain_areas, terrain_image,
 )
 
 
@@ -456,3 +457,110 @@ def test_building_project_preserves_source_and_uses_distinct_class_color() -> No
     enlarged_houses = np.repeat(np.repeat(houses, 8, axis=0), 8, axis=1)
     assert np.all(pixels[enlarged_houses] == (22, 163, 74))
     np.testing.assert_array_equal(plan.terrain.classes, before)
+
+
+def test_school_budget_comparison_through_form():
+    app = generated_demo_app()
+    app.number_input(key="school_budget").set_value(0)
+    app.button[0].click().run()
+    assert not app.exception
+    zero_plan = app.session_state.building_plan
+    zero = app.session_state.school_allocation
+    assert zero.served == 0 and zero.deficit == zero.demand == 76
+    assert not zero.schools
+    assert school_deficit_reasons(zero) == (76, 0)
+    app.number_input(key="school_budget").set_value(1)
+    app.button[0].click().run()
+    assert not app.exception
+    plan = app.session_state.building_plan
+    result = app.session_state.school_allocation
+    assert result.served > 0 and len(result.schools) == 1
+    assert plan.population == zero_plan.population == 608
+    assert plan.buildings == zero_plan.buildings
+    np.testing.assert_array_equal(plan.building_ids, zero_plan.building_ids)
+    np.testing.assert_array_equal(plan.roads.road_mask, zero_plan.roads.road_mask)
+    metrics = {item.label: item.value for item in app.metric}
+    assert int(metrics["Спрос, мест"]) == result.demand
+    assert int(metrics["Обслужено, мест"]) == result.served
+    assert int(metrics["Дефицит, мест"]) == result.deficit
+    assert metrics["Покрытие спроса"] == f"{100 * result.served / result.demand:.2f}%"
+    assert int(metrics["Нет школы в пределах пути, мест"]) + int(metrics["Не хватило мест в достижимой школе"]) == result.deficit
+    assert any("6 — Новая школа" in item.value for item in app.markdown)
+    row = app.dataframe[-1].value.iloc[0]
+    assert row["Занято, мест"] == result.schools[0].served
+    assert row["Вместимость, мест"] == 80
+    assert row["Макс. назначенный путь, м"] <= 400
+
+
+def test_school_capacity_and_distance_and_draft_parameters():
+    app = generated_demo_app()
+    previous = app.session_state.school_allocation
+    app.number_input(key="school_capacity").set_value(1)
+    app.number_input(key="max_school_distance_m").set_value(200.0)
+    assert app.session_state.school_allocation.schools == previous.schools
+    assert app.session_state.building_plan.scenario.school_capacity == 80
+    assert any("вместимость 80 мест" in item.value for item in app.caption)
+    app.button[0].click().run()
+    assert not app.exception
+    result = app.session_state.school_allocation
+    assert app.session_state.building_plan.scenario.max_school_distance_m == 200
+    assert result.served == 1
+    no_route, no_capacity = school_deficit_reasons(result)
+    assert no_capacity > 0
+    assert no_route + no_capacity == result.deficit
+    assert all(s.max_assigned_distance_m <= 200 for s in result.schools)
+    assert any("вместимость 1 мест" in item.value for item in app.caption)
+
+
+def test_zero_school_demand_is_not_a_percentage():
+    app = confirm_local(own_file_app(upload_bytes(np.array([[2, 3], [1, 255]], dtype=np.uint8))))
+    app.button[0].click().run()
+    assert not app.exception
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Покрытие спроса"] == "нет спроса"
+    assert metrics["Дефицит, мест"] == "0"
+    assert metrics["Открыто школ, шт."] == "0"
+
+
+def test_school_map_preserves_source_and_marks_only_open_sites():
+    app = generated_demo_app()
+    plan = app.session_state.building_plan
+    allocation = app.session_state.school_allocation
+    original = plan.terrain.classes.copy()
+    before = building_project_classes(plan)
+    after = school_project_classes(plan, allocation)
+    mask = after == 6
+    assert mask.sum() == len(allocation.schools)
+    for school in allocation.schools:
+        coordinate = school.site.coordinate
+        assert plan.reserve.mask[coordinate]
+        assert before[coordinate] == 0
+        assert mask[coordinate]
+    np.testing.assert_array_equal(after[~mask], before[~mask])
+    np.testing.assert_array_equal(plan.terrain.classes, original)
+    assert not after.flags.writeable
+    image = school_project_image(plan, allocation)
+    assert image.size == terrain_image(plan.terrain).size
+    assert (147, 51, 234) in {color for _, color in image.getcolors(maxcolors=1000000)}
+
+
+def test_failed_school_calculation_preserves_pair_and_source_change_clears_it(monkeypatch):
+    import urban.services
+
+    app = generated_demo_app()
+    plan = app.session_state.building_plan
+    allocation = app.session_state.school_allocation
+
+    def fail(*args, **kwargs):
+        raise ValueError("Контрольная ошибка школ")
+
+    monkeypatch.setattr(urban.services, "calculate_school_services", fail)
+    app.number_input(key="school_budget").set_value(0)
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.error
+    assert app.session_state.building_plan.scenario == plan.scenario
+    assert app.session_state.school_allocation.schools == allocation.schools
+    app.radio[0].set_value("Свой TIFF").run()
+    assert app.session_state.building_plan is None
+    assert app.session_state.school_allocation is None
