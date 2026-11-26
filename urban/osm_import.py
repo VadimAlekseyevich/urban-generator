@@ -4,11 +4,13 @@
 по-прежнему работают с TIFF, без osmium и доступа к сети.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 from math import floor, isfinite
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
 from rasterio.crs import CRS
@@ -22,7 +24,7 @@ from urban.model import ClassCode, MAX_RASTER_SIDE, validate_pixel_size_m
 
 
 ATTRIBUTION = "© OpenStreetMap contributors, https://www.openstreetmap.org/copyright"
-IMPORT_VERSION = 1
+IMPORT_VERSION = 2
 ROAD_TYPES = frozenset({
     "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
     "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
@@ -46,9 +48,14 @@ BLOCKED_AMENITY = frozenset({
     "school", "kindergarten", "college", "university", "hospital", "clinic",
     "grave_yard", "place_of_worship", "parking", "fire_station",
 })
-KEYS = ("building", "building:part", "highway", "waterway", "railway",
-        "natural", "landuse", "leisure", "amenity", "boundary", "aeroway",
-        "man_made", "power")
+AREA_KEYS = ("building", "building:part", "natural", "landuse", "leisure",
+             "amenity", "boundary", "waterway", "aeroway", "man_made", "power")
+WAY_KEYS = ("highway", "waterway", "railway", "aeroway")
+Progress = Callable[[str], None]
+
+
+def _silent(message: str) -> None:
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,19 +137,30 @@ def _rasterize(shapes: dict, window: Window) -> np.ndarray:
     return classes
 
 
-def _hash_file(path: Path) -> str:
+def _hash_file(path: Path, progress: Progress = _silent) -> str:
     digest = sha256()
+    total = path.stat().st_size
+    done = 0
+    last = monotonic()
+    progress(f"[1/3] SHA-256: {total / 2**20:.1f} МиБ")
     with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
             digest.update(chunk)
+            done += len(chunk)
+            if monotonic() - last >= 2:
+                progress(f"  Прочитано {done / 2**20:.1f} / {total / 2**20:.1f} МиБ")
+                last = monotonic()
+    progress("[1/3] SHA-256 готов.")
     return digest.hexdigest()
 
 
-def import_pbf(path: Path, window: Window, *, index: str = "flex_mem") -> tuple[bytes, dict]:
+def import_pbf(path: Path, window: Window, *, index: str = "flex_mem",
+               progress: Progress = _silent, threads: int = 4) -> tuple[bytes, dict]:
     """Сканирует PBF локально, хранит геометрии только выбранного окна.
 
-    Индекс координат узлов и сборщик multipolygon могут использовать RAM
-    всего регионального файла. Время чтения зависит от его размера.
+    Отбор тегов выполняется в C++ до передачи объектов в Python.
+    Первый проход по отношениям, индекс узлов и сборка площадей остаются
+    региональными операциями. Процент сканирования не известен.
     """
     import osmium
 
@@ -151,21 +169,40 @@ def import_pbf(path: Path, window: Window, *, index: str = "flex_mem") -> tuple[
         raise ValueError("Укажите существующий файл .osm.pbf.")
     if index not in osmium.index.map_types():
         raise ValueError("Неподдерживаемый индекс osmium: " + index)
-    source_hash = _hash_file(path)
+    if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 16:
+        raise ValueError("Число потоков должно быть от 1 до 16.")
+    source_hash = _hash_file(path, progress)
     factory = osmium.geom.GeoJSONFactory()
     shapes = {code: [] for code in (ClassCode.EXISTING_ROAD, ClassCode.BLOCKED, ClassCode.EXISTING_BUILDING)}
     invalid = 0
-    processor = (osmium.FileProcessor(str(path)).with_locations(index).with_areas()
-                 .with_filter(osmium.filter.KeyFilter(*KEYS)))
+    examined = 0
+    progress(f"[2/3] Сканирование PBF: индекс {index}, потоков чтения {threads}, подготовка отношений и чтение узлов.")
+    # with_areas filters apply only to relation candidates in the first pass;
+    # member ways (including untagged rings) are still available to the assembler.
+    pool = osmium.io.ThreadPool(threads, max_queue_size=4)
+    processor = (osmium.FileProcessor(str(path), thread_pool=pool).with_locations(index)
+                 .with_areas(osmium.filter.KeyFilter(*AREA_KEYS))
+                 .with_filter(osmium.filter.EntityFilter(osmium.osm.NODE | osmium.osm.WAY | osmium.osm.AREA))
+                 .with_filter(osmium.filter.KeyFilter("amenity").enable_for(osmium.osm.NODE))
+                 .with_filter(osmium.filter.KeyFilter(*WAY_KEYS).enable_for(osmium.osm.WAY))
+                 .with_filter(osmium.filter.KeyFilter(*AREA_KEYS).enable_for(osmium.osm.AREA)))
+    started = last = monotonic()
     for obj in processor:
+        examined += 1
+        if examined == 1 or monotonic() - last >= 3:
+            last = monotonic()
+            progress(f"  Кандидатов проверено: {examined:,}; в окне: {sum(map(len, shapes.values())):,}; "
+                     f"время скана: {last - started:.1f} с.")
         kind = obj.type_str()
-        if kind not in ("n", "w", "a"):
-            continue
         code = classify(obj.tags, {"n": "node", "w": "way", "a": "area"}[kind])
         if code is None:
             continue
         try:
             if kind == "n":
+                # Не создавать GeoJSON для точек заведомо вне окна.
+                x, y = obj.location.lon, obj.location.lat
+                if not _overlaps((x, y, x, y), window.wgs84_bounds):
+                    continue
                 geom = json.loads(factory.create_point(obj))
             elif kind == "w":
                 geom = json.loads(factory.create_linestring(obj))
@@ -177,6 +214,10 @@ def import_pbf(path: Path, window: Window, *, index: str = "flex_mem") -> tuple[
             shapes[code].append(projected)
         except (RuntimeError, ValueError, osmium.InvalidLocationError):
             invalid += 1
+    progress(f"[2/3] Сканирование завершено: {examined:,} кандидатов, "
+             f"{sum(map(len, shapes.values())):,} геометрий в окне, "
+             f"{monotonic() - started:.1f} с.")
+    progress("[3/3] Растеризация и проверка GeoTIFF.")
     classes = _rasterize(shapes, window)
     metadata = {
         "import_version": IMPORT_VERSION, "source_name": path.name,
@@ -199,4 +240,5 @@ def import_pbf(path: Path, window: Window, *, index: str = "flex_mem") -> tuple[
         data = memory.read()
     # Та же проверка, что в UI, включая наличие исходной дороги.
     read_terrain(data)
+    progress("[3/3] GeoTIFF проверен.")
     return data, metadata
