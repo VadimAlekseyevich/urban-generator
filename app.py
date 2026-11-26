@@ -2,15 +2,27 @@
 
 from hashlib import sha256
 from pathlib import Path
+from dataclasses import fields
 
 import streamlit as st
 
+from urban.generate import generate_roads
 from urban.io import TerrainReadError, read_terrain
-from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE
-from urban.report import INPUT_LEGEND, terrain_areas, terrain_image
+from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
+from urban.report import INPUT_LEGEND, ROAD_LEGEND, road_project_image, terrain_areas, terrain_image
 
 
 DEMO_PATH = Path(__file__).resolve().parent / "examples" / "demo.tif"
+
+
+def show_legend(legend: dict) -> None:
+    st.subheader("Легенда")
+    for code, (label, color) in sorted(legend.items()):
+        st.markdown(
+            f'<span style="display:inline-block;width:1em;height:1em;'
+            f'background:{color};border:1px solid #888;margin-right:0.5em"></span>'
+            f"{int(code)} — {label}", unsafe_allow_html=True,
+        )
 
 
 def main() -> None:
@@ -63,6 +75,7 @@ def main() -> None:
         st.session_state.input_identity = input_identity
         st.session_state.legend_confirmed = False
         st.session_state.scale_confirmed = False
+        st.session_state.road_run = None
 
     if data is None:
         st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
@@ -90,18 +103,8 @@ def main() -> None:
     )
     st.metric("Площадь исследования, м²", f"{terrain.valid_mask.sum() * terrain.cell_area_m2:g}")
 
-    map_column, legend_column = st.columns([2, 1])
-    with map_column:
-        st.subheader("Исходная территория")
-        st.image(terrain_image(terrain), alt="Карта классов исходной территории")
-    with legend_column:
-        st.subheader("Легенда")
-        for code, (label, color) in INPUT_LEGEND.items():
-            st.markdown(
-                f'<span style="display:inline-block;width:1em;height:1em;'
-                f'background:{color};border:1px solid #888;margin-right:0.5em"></span>'
-                f"{int(code)} — {label}", unsafe_allow_html=True,
-            )
+    # Место карт остаётся над подтверждениями, результат рисуется после формы.
+    map_container = st.container()
 
     st.dataframe(terrain_areas(terrain), hide_index=True)
     st.caption("NoData исключён из площади исследования. Площади рассчитаны по подтверждаемой легенде.")
@@ -118,7 +121,65 @@ def main() -> None:
         st.success("Легенда и масштаб подтверждены.")
     else:
         st.info("Проверьте карту и подтвердите легенду; в локальном режиме подтвердите также масштаб.")
-    st.caption("Расчёт застройки пока недоступен.")
+
+    defaults = Scenario()
+    specifications = {parameter.name: parameter for parameter in fields(Scenario)}
+    st.subheader("Параметры улиц")
+    with st.form("road_parameters"):
+        spacing_spec = specifications["street_spacing_cells"].metadata
+        seed_spec = specifications["seed"].metadata
+        spacing = st.number_input(
+            "Шаг улиц, ячеек", min_value=spacing_spec["min"], max_value=spacing_spec["max"],
+            value=defaults.street_spacing_cells, step=1, key="street_spacing_cells",
+        )
+        seed = st.number_input(
+            "Seed", min_value=seed_spec["min"], max_value=seed_spec["max"],
+            value=defaults.seed, step=1, key="seed",
+            help="Одинаковые файл, масштаб, шаг улиц и seed дают одинаковый проект.",
+        )
+        submitted = st.form_submit_button("Сгенерировать", disabled=not st.session_state.terrain_ready)
+    if submitted and st.session_state.terrain_ready:
+        try:
+            scenario = Scenario(street_spacing_cells=spacing, seed=seed)
+            roads = generate_roads(terrain, scenario)
+        except ValueError:
+            st.error("Не удалось построить улицы. Проверьте параметры и повторите расчёт.")
+        else:
+            st.session_state.road_run = {"terrain": terrain, "scenario": scenario, "roads": roads}
+
+    run = st.session_state.get("road_run")
+    with map_container:
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Исходная территория")
+            st.image(
+                terrain_image(terrain), alt="Карта классов исходной территории",
+                width="stretch", output_format="PNG",
+            )
+        with right:
+            if run is None:
+                show_legend(INPUT_LEGEND)
+            else:
+                st.subheader("Проект")
+                st.image(
+                    road_project_image(run["terrain"], run["roads"]),
+                    alt="Проект с новыми улицами", width="stretch", output_format="PNG",
+                )
+        if run is not None:
+            show_legend(ROAD_LEGEND)
+
+    if run is not None:
+        used = run["scenario"]
+        count = int(run["roads"].new_roads.sum())
+        st.caption(
+            f"Параметры выполненного расчёта: шаг улиц {used.street_spacing_cells} ячеек "
+            f"({used.street_spacing_cells * run['terrain'].pixel_size_m:g} м), seed {used.seed}."
+        )
+        st.metric("Новые улицы, ячеек", count)
+        st.metric("Площадь новых улиц, м²", f"{count * run['terrain'].cell_area_m2:g}")
+        if count == 0:
+            st.info("Нет достижимых свободных ячеек на осях новых улиц.")
+    st.caption("В этой версии рассчитываются улицы. Дома и школы пока недоступны.")
 
 
 if __name__ == "__main__":

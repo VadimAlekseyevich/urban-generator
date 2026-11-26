@@ -14,7 +14,7 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from examples.create_demo import DEMO_PATH
-from urban.report import terrain_areas, terrain_image
+from urban.report import road_project_classes, road_project_image, terrain_areas, terrain_image
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -199,3 +199,157 @@ def test_preview_has_exact_class_colors_and_does_not_modify_source() -> None:
         assert reopened.size == image.size
     np.testing.assert_array_equal(terrain.classes, before)
     assert terrain_areas(terrain)[-1]["Площадь, м²"] is None
+
+
+def generated_demo_app() -> AppTest:
+    app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
+    app.checkbox(key="legend_confirmed").check().run()
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.road_run is not None
+    return app
+
+
+def test_generation_requires_confirmed_terrain() -> None:
+    app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
+    assert app.button[0].label == "Сгенерировать"
+    assert app.button[0].disabled
+    assert app.session_state.road_run is None
+    app.checkbox(key="legend_confirmed").check().run()
+    assert not app.button[0].disabled
+    assert app.session_state.road_run is None
+
+
+def test_demo_generation_shows_two_maps_and_keeps_scenario() -> None:
+    from scipy.ndimage import generate_binary_structure, label
+
+    app = generated_demo_app()
+    run = app.session_state.road_run
+    terrain, roads, scenario = run["terrain"], run["roads"], run["scenario"]
+    assert scenario.seed == 42
+    assert scenario.street_spacing_cells == 8
+    assert len(app.get("image")) == 2
+    assert all(item.proto.imgs[0].url.endswith(".png") for item in app.get("image"))
+    assert any(item.value == "Проект" for item in app.subheader)
+    assert any("4 — Новая улица" in item.value for item in app.markdown)
+    assert roads.new_roads.any()
+    assert not roads.new_roads[:, 56:].any()
+    components, count = label(roads.road_mask, structure=generate_binary_structure(2, 1))
+    for component in range(1, count + 1):
+        assert np.any((components == component) & (terrain.classes == 2))
+    metrics = {item.label: item.value for item in app.metric}
+    assert int(metrics["Новые улицы, ячеек"]) == int(roads.new_roads.sum())
+    assert float(metrics["Площадь новых улиц, м²"]) == roads.new_roads.sum() * 100
+
+
+def test_repeat_seed_42_and_change_spacing_through_form() -> None:
+    app = generated_demo_app()
+    first = app.session_state.road_run["roads"].new_roads.copy()
+    app.button[0].click().run()
+    assert not app.exception
+    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, first)
+    app.number_input(key="street_spacing_cells").set_value(5)
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.road_run["scenario"].seed == 42
+    assert app.session_state.road_run["scenario"].street_spacing_cells == 5
+    assert not np.array_equal(app.session_state.road_run["roads"].new_roads, first)
+
+
+def test_form_edit_without_submit_preserves_completed_run_and_its_parameters() -> None:
+    app = generated_demo_app()
+    first = app.session_state.road_run["roads"].new_roads.copy()
+    # Правка внутри st.form остаётся черновиком до нажатия кнопки.
+    app.number_input(key="seed").set_value(43)
+    assert not app.exception
+    assert app.session_state.road_run["scenario"].seed == 42
+    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, first)
+    assert any("seed 42" in item.value for item in app.caption)
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.road_run["scenario"].seed == 43
+    assert not np.array_equal(app.session_state.road_run["roads"].new_roads, first)
+
+
+def test_new_source_clears_the_previous_road_project() -> None:
+    app = generated_demo_app()
+    app.radio[0].set_value("Свой TIFF").run()
+    assert app.session_state.road_run is None
+    assert not app.get("image")
+    app.file_uploader[0].set_value(("demo.tif", DEMO_PATH.read_bytes(), "image/tiff")).run()
+    assert not app.exception
+    assert app.session_state.road_run is None
+    assert app.button[0].disabled
+    assert len(app.get("image")) == 1
+
+
+def test_local_scale_change_clears_project_and_blocks_new_run() -> None:
+    app = confirm_local(own_file_app(upload_bytes()))
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.road_run["terrain"].pixel_size_m == 10
+    app.number_input(key="local_scale").set_value(5).run()
+    assert not app.exception
+    assert app.session_state.road_run is None
+    assert app.button[0].disabled
+    assert len(app.get("image")) == 1
+
+
+def test_project_colors_and_scale_match_the_source_and_preserve_original_objects() -> None:
+    app = generated_demo_app()
+    run = app.session_state.road_run
+    terrain, roads = run["terrain"], run["roads"]
+    before = terrain.classes.copy()
+    project = road_project_classes(terrain, roads)
+    np.testing.assert_array_equal(project[~roads.new_roads], before[~roads.new_roads])
+    assert np.all(project[roads.new_roads] == 4)
+    assert not project.flags.writeable
+    assert not np.shares_memory(project, terrain.classes)
+    original_image, project_image = terrain_image(terrain), road_project_image(terrain, roads)
+    assert original_image.size == project_image.size == (768, 768)
+    original_pixels, project_pixels = np.asarray(original_image), np.asarray(project_image)
+    assert len(project_image.getcolors()) == 6
+    enlarged_new_roads = np.repeat(np.repeat(roads.new_roads, 8, axis=0), 8, axis=1)
+    np.testing.assert_array_equal(project_pixels[~enlarged_new_roads], original_pixels[~enlarged_new_roads])
+    assert np.all(project_pixels[enlarged_new_roads] == (239, 68, 68))
+    np.testing.assert_array_equal(terrain.classes, before)
+
+
+def test_failed_regeneration_keeps_last_successful_scenario(monkeypatch) -> None:
+    import urban.generate
+
+    app = generated_demo_app()
+    before = app.session_state.road_run["roads"].new_roads.copy()
+
+    def fail(*args, **kwargs):
+        raise ValueError("Контрольный сбой генерации")
+
+    monkeypatch.setattr(urban.generate, "generate_roads", fail)
+    app.number_input(key="seed").set_value(43)
+    app.button[0].click().run()
+    assert not app.exception
+    assert "Не удалось построить улицы" in app.error[0].value
+    assert app.session_state.road_run["scenario"].seed == 42
+    np.testing.assert_array_equal(app.session_state.road_run["roads"].new_roads, before)
+    assert len(app.get("image")) == 2
+
+
+def test_occupied_map_displays_zero_new_roads_without_error() -> None:
+    data = upload_bytes(np.array([[2, 3], [1, 255]], dtype=np.uint8))
+    app = confirm_local(own_file_app(data))
+    app.button[0].click().run()
+    assert not app.exception
+    assert not app.error
+    assert not app.session_state.road_run["roads"].new_roads.any()
+    assert len(app.get("image")) == 2
+    assert any("Нет достижимых свободных ячеек" in item.value for item in app.info)
+
+
+def test_form_accepts_maximum_seed_and_street_spacing() -> None:
+    app = generated_demo_app()
+    app.number_input(key="seed").set_value(2**32 - 1)
+    app.number_input(key="street_spacing_cells").set_value(20)
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state.road_run["scenario"].seed == 2**32 - 1
+    assert app.session_state.road_run["scenario"].street_spacing_cells == 20
