@@ -1,15 +1,24 @@
 """Стадии генерации на неизменяемой исходной территории."""
 
+from math import floor
+
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import binary_dilation, binary_propagation, distance_transform_edt, generate_binary_structure
 
 from urban.model import (
+    AREA_PER_RESIDENT_M2,
     BARRIER_CLEARANCE_WEIGHT,
     BARRIER_DISTANCE_SCALE_M,
+    HOUSE_SIDE_CELLS,
     ROAD_DISTANCE_SCALE_M,
     ROAD_PROXIMITY_WEIGHT,
     SCHOOL_SECTOR_COLUMNS,
     SCHOOL_SECTOR_ROWS,
+    SCHOOLCHILD_FRACTION,
+    USEFUL_AREA_FRACTION,
+    Building,
+    BuildingPlan,
     ClassCode,
     RoadNetwork,
     Scenario,
@@ -106,3 +115,70 @@ def reserve_school_sites(roads: RoadNetwork) -> SchoolReserve:
             mask[coordinate] = True
     mask.setflags(write=False)
     return SchoolReserve(tuple(sorted(coordinates)), mask)
+
+
+def generate_buildings(terrain: Terrain, scenario: Scenario) -> BuildingPlan:
+    """Сквозной расчёт улиц, резерва и новых домов без запуска интерфейса."""
+    roads = generate_roads(terrain, scenario)
+    reserve = reserve_school_sites(roads)
+    return place_buildings(terrain, scenario, roads, reserve)
+
+
+def place_buildings(
+    terrain: Terrain, scenario: Scenario, roads: RoadNetwork, reserve: SchoolReserve,
+) -> BuildingPlan:
+    """Размещение окон 2×2 по §4, шаги 4–5 DESIGN.md.
+
+    Кандидаты изначально упорядочены по строке и столбцу. Перестановка
+    PCG64(seed) и стабильная сортировка по убыванию среднего S задают
+    порядок равных кандидатов. Занятость проверяется после каждого дома.
+    """
+    side = HOUSE_SIDE_CELLS
+    ids = np.zeros(terrain.classes.shape, dtype=np.int32)
+    buildings = []
+    available = roads.suitability.free_mask & ~roads.road_mask & ~reserve.mask
+    if min(available.shape) >= side:
+        near_road = binary_dilation(roads.road_mask, structure=generate_binary_structure(2, 1))
+        free_windows = sliding_window_view(available, (side, side)).all(axis=(-2, -1))
+        road_windows = sliding_window_view(near_road, (side, side)).any(axis=(-2, -1))
+        candidates = np.argwhere(free_windows & road_windows)
+        score_windows = sliding_window_view(roads.suitability.scores, (side, side))
+        scores = score_windows[candidates[:, 0], candidates[:, 1]].mean(axis=(-2, -1))
+        rng = np.random.Generator(np.random.PCG64(scenario.seed))
+        shuffled = rng.permutation(len(candidates))
+        order = shuffled[np.argsort(-scores[shuffled], kind="stable")]
+        area = side**2 * terrain.cell_area_m2
+        residents = floor(area * scenario.floors * USEFUL_AREA_FRACTION / AREA_PER_RESIDENT_M2 + 0.5)
+        demand = floor(SCHOOLCHILD_FRACTION * residents + 0.5)
+        population = 0
+        for index in order:
+            row, column = (int(value) for value in candidates[index])
+            footprint = np.s_[row:row + side, column:column + side]
+            if not available[footprint].all():
+                continue
+            house_entry, road_entry = _building_entry(row, column, roads.road_mask)
+            building_id = len(buildings) + 1
+            available[footprint] = False
+            ids[footprint] = building_id
+            buildings.append(Building(
+                id=building_id, row=row, column=column,
+                house_entry=house_entry, road_entry=road_entry, floors=scenario.floors,
+                footprint_area_m2=area, population=residents, school_demand=demand,
+            ))
+            population += residents
+            if population >= scenario.target_population:
+                break
+    ids.setflags(write=False)
+    return BuildingPlan(terrain, scenario, roads, reserve, tuple(buildings), ids)
+
+
+def _building_entry(row: int, column: int, road_mask: np.ndarray) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Первая по координатам пара ячеек дома и дороги с общей стороной."""
+    height, width = road_mask.shape
+    for r in range(row, row + HOUSE_SIDE_CELLS):
+        for c in range(column, column + HOUSE_SIDE_CELLS):
+            for dr, dc in ((-1, 0), (0, -1), (0, 1), (1, 0)):
+                neighbour = (r + dr, c + dc)
+                if 0 <= neighbour[0] < height and 0 <= neighbour[1] < width and road_mask[neighbour]:
+                    return (r, c), neighbour
+    raise ValueError("У дома отсутствует вход к дорожной сети")

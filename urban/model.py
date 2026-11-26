@@ -231,3 +231,46 @@ class SchoolReserve:
 
     coordinates: tuple[tuple[int, int], ...]
     mask: NDArray[np.bool_]
+
+
+@dataclass(frozen=True, slots=True)
+class Building:
+    """Новый дом; вход задан парой соседних ячеек «дом / дорога»."""
+
+    id: int
+    row: int
+    column: int
+    house_entry: tuple[int, int]
+    road_entry: tuple[int, int]
+    floors: int
+    footprint_area_m2: float
+    population: int
+    school_demand: int
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class BuildingPlan:
+    """Застройка на исходной сетке; building_ids=0 вне новых домов.
+
+    Все стадии и использованный сценарий сохранены для расчёта школ и UI.
+    generate_buildings/place_buildings возвращают маску ID без права записи.
+    """
+
+    terrain: Terrain
+    scenario: Scenario
+    roads: RoadNetwork
+    reserve: SchoolReserve
+    buildings: tuple[Building, ...]
+    building_ids: NDArray[np.int32]
+
+    @property
+    def population(self) -> int:
+        return sum(building.population for building in self.buildings)
+
+    @property
+    def school_demand(self) -> int:
+        return sum(building.school_demand for building in self.buildings)
+
+    @property
+    def stop_reason(self) -> str:
+        return "target_reached" if self.population >= self.scenario.target_population else "candidates_exhausted"
