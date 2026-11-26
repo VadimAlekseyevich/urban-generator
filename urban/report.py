@@ -1,9 +1,9 @@
-"""Предпросмотр исходной территории и площади по входной легенде."""
+"""Изображения исходной территории, проекта улиц и площади по классам."""
 
 import numpy as np
 from PIL import Image
 
-from urban.model import ClassCode, Terrain
+from urban.model import ClassCode, RoadNetwork, Terrain
 
 
 # Подписи и цвета общие для карты и легенды интерфейса.
@@ -15,12 +15,30 @@ INPUT_LEGEND = {
     ClassCode.NODATA: ("Вне исследования / NoData", "#111827"),
 }
 
+ROAD_LEGEND = {**INPUT_LEGEND, ClassCode.NEW_ROAD: ("Новая улица", "#ef4444")}
+
 
 def terrain_image(terrain: Terrain) -> Image.Image:
     """Предпросмотр с целочисленным увеличением без смешивания классов."""
-    rgb = np.zeros((*terrain.classes.shape, 3), dtype=np.uint8)
-    for code, (_, color) in INPUT_LEGEND.items():
-        rgb[terrain.classes == code] = tuple(bytes.fromhex(color[1:]))
+    return _classes_image(terrain.classes, INPUT_LEGEND)
+
+
+def road_project_classes(terrain: Terrain, roads: RoadNetwork) -> np.ndarray:
+    """Наложить новые улицы на копию исходного растра."""
+    project = terrain.classes.copy()
+    project[roads.new_roads] = ClassCode.NEW_ROAD
+    project.setflags(write=False)
+    return project
+
+
+def road_project_image(terrain: Terrain, roads: RoadNetwork) -> Image.Image:
+    return _classes_image(road_project_classes(terrain, roads), ROAD_LEGEND)
+
+
+def _classes_image(classes: np.ndarray, legend: dict) -> Image.Image:
+    rgb = np.zeros((*classes.shape, 3), dtype=np.uint8)
+    for code, (_, color) in legend.items():
+        rgb[classes == code] = tuple(bytes.fromhex(color[1:]))
     image = Image.fromarray(rgb)
     factor = max(1, 768 // max(image.size))
     return image.resize((image.width * factor, image.height * factor), Image.Resampling.NEAREST)
