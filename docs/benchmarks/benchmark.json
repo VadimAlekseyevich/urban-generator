@@ -1,0 +1,240 @@
+{
+  "environment": {
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
+    "logical_cpus": 4,
+    "ram_bytes": 16759431168,
+    "os": "Linux-7.0.0-1020-azure-x86_64-with-glibc2.43",
+    "python": "3.12.16",
+    "packages": {
+      "numpy": "2.5.5",
+      "scipy": "1.18.1",
+      "rasterio": "1.5.2",
+      "pillow": "13.0.0",
+      "streamlit": "1.67.0",
+      "pytest": "9.2.0"
+    },
+    "github_actions": true
+  },
+  "cases": [
+    {
+      "size": 96,
+      "warmups": 1,
+      "repeats": [
+        {
+          "repeat": 1,
+          "read_s": 0.0008846469999994611,
+          "roads_s": 0.0006106299999970588,
+          "reserve_s": 0.00019638300000224262,
+          "buildings_s": 0.0007504579999988437,
+          "schools_s": 0.0007950039999968794,
+          "validation_s": 0.0010119570000028943,
+          "generation_s": 0.003364431999997919,
+          "export_s": 0.0020725779999963834
+        },
+        {
+          "repeat": 2,
+          "read_s": 0.0008476120000011633,
+          "roads_s": 0.0006111209999986045,
+          "reserve_s": 0.0001824409999997556,
+          "buildings_s": 0.0007456310000009125,
+          "schools_s": 0.0007540329999997653,
+          "validation_s": 0.0010144519999997215,
+          "generation_s": 0.0033076779999987593,
+          "export_s": 0.002092767000000606
+        },
+        {
+          "repeat": 3,
+          "read_s": 0.0008356849999984206,
+          "roads_s": 0.0006050510000008558,
+          "reserve_s": 0.00018023799999866696,
+          "buildings_s": 0.0007441090000028794,
+          "schools_s": 0.0007816939999969463,
+          "validation_s": 0.0010184469999998669,
+          "generation_s": 0.0033295389999992153,
+          "export_s": 0.0020484220000014375
+        },
+        {
+          "repeat": 4,
+          "read_s": 0.0008521789999988982,
+          "roads_s": 0.0005941350000000511,
+          "reserve_s": 0.00017916699999886987,
+          "buildings_s": 0.0007521510000003673,
+          "schools_s": 0.000760663000001216,
+          "validation_s": 0.001015311999999824,
+          "generation_s": 0.003301428000000328,
+          "export_s": 0.0020420119999968733
+        },
+        {
+          "repeat": 5,
+          "read_s": 0.0008350339999978473,
+          "roads_s": 0.0005915010000023813,
+          "reserve_s": 0.00018549600000028477,
+          "buildings_s": 0.0007363570000009645,
+          "schools_s": 0.0007615049999998291,
+          "validation_s": 0.0010113860000018349,
+          "generation_s": 0.0032862450000052945,
+          "export_s": 0.0020832029999979795
+        }
+      ],
+      "medians_s": {
+        "read_s": 0.0008476120000011633,
+        "roads_s": 0.0006050510000008558,
+        "reserve_s": 0.0001824409999997556,
+        "buildings_s": 0.0007456310000009125,
+        "schools_s": 0.0007615049999998291,
+        "validation_s": 0.0010144519999997215,
+        "generation_s": 0.0033076779999987593,
+        "export_s": 0.0020725779999963834
+      },
+      "target_s": 3.0,
+      "within_target": true,
+      "input_sha256": "20556fef49ad806c4b1d4c206b5d4675b37bf3847f1564f15aff8ef72d7ff793",
+      "shape": [
+        96,
+        96
+      ],
+      "pixel_size_m": 10.0,
+      "parameters": {
+        "target_population": 600,
+        "floors": 3,
+        "street_spacing_cells": 8,
+        "school_budget": 1,
+        "school_capacity": 80,
+        "max_school_distance_m": 400.0,
+        "seed": 42
+      },
+      "metrics": {
+        "violations_m2": 0.0,
+        "disconnected_road_cells": 0,
+        "new_road_cells": 1201,
+        "new_road_area_m2": 120100.0,
+        "new_buildings": 19,
+        "building_area_m2": 7600.0,
+        "developed_area_m2": 127800.0,
+        "developed_percent": 14.743885556068298,
+        "target_population": 600,
+        "population": 608,
+        "population_delta": 8,
+        "population_shortfall": 0,
+        "school_demand": 76,
+        "school_served": 72,
+        "school_deficit": 4,
+        "school_coverage_percent": 94.73684210526316,
+        "opened_schools": 1,
+        "no_route_places": 4,
+        "no_capacity_places": 0
+      },
+      "zip_bytes": 2787
+    },
+    {
+      "size": 256,
+      "warmups": 1,
+      "repeats": [
+        {
+          "repeat": 1,
+          "read_s": 0.0015846009999975763,
+          "roads_s": 0.0039731590000045,
+          "reserve_s": 0.0005797529999966855,
+          "buildings_s": 0.007397971000003167,
+          "schools_s": 0.008151812999997787,
+          "validation_s": 0.027238936999999908,
+          "generation_s": 0.04734163300000205,
+          "export_s": 0.03001129700000149
+        },
+        {
+          "repeat": 2,
+          "read_s": 0.0014670150000029025,
+          "roads_s": 0.003939828999996564,
+          "reserve_s": 0.0005796740000008072,
+          "buildings_s": 0.007380173999997908,
+          "schools_s": 0.008030923000006851,
+          "validation_s": 0.02692641199999457,
+          "generation_s": 0.0468570119999967,
+          "export_s": 0.02951021999999881
+        },
+        {
+          "repeat": 3,
+          "read_s": 0.001431562000000497,
+          "roads_s": 0.003907911999995406,
+          "reserve_s": 0.0005724230000012653,
+          "buildings_s": 0.007308766999997829,
+          "schools_s": 0.008050823000004925,
+          "validation_s": 0.027141181999994046,
+          "generation_s": 0.04698110699999347,
+          "export_s": 0.029956866000006244
+        },
+        {
+          "repeat": 4,
+          "read_s": 0.0014945659999980876,
+          "roads_s": 0.003881762000006006,
+          "reserve_s": 0.0005605549999998516,
+          "buildings_s": 0.007391781999999125,
+          "schools_s": 0.00808659599999828,
+          "validation_s": 0.02698324600000035,
+          "generation_s": 0.04690394100000361,
+          "export_s": 0.029795335999999395
+        },
+        {
+          "repeat": 5,
+          "read_s": 0.0014996849999988626,
+          "roads_s": 0.0039404589999989525,
+          "reserve_s": 0.0005882270000014955,
+          "buildings_s": 0.0073136450000035325,
+          "schools_s": 0.008077432000000329,
+          "validation_s": 0.026936105999993742,
+          "generation_s": 0.04685586899999805,
+          "export_s": 0.02988788300000067
+        }
+      ],
+      "medians_s": {
+        "read_s": 0.0014945659999980876,
+        "roads_s": 0.003939828999996564,
+        "reserve_s": 0.0005796740000008072,
+        "buildings_s": 0.007380173999997908,
+        "schools_s": 0.008077432000000329,
+        "validation_s": 0.02698324600000035,
+        "generation_s": 0.04690394100000361,
+        "export_s": 0.02988788300000067
+      },
+      "target_s": 10.0,
+      "within_target": true,
+      "input_sha256": "6e2c25267f0f71d982822dc97d0e42cb3ea84f20a08226ecf88b82441b51290c",
+      "shape": [
+        256,
+        256
+      ],
+      "pixel_size_m": 10.0,
+      "parameters": {
+        "target_population": 20000,
+        "floors": 3,
+        "street_spacing_cells": 5,
+        "school_budget": 3,
+        "school_capacity": 80,
+        "max_school_distance_m": 400.0,
+        "seed": 42
+      },
+      "metrics": {
+        "violations_m2": 0.0,
+        "disconnected_road_cells": 0,
+        "new_road_cells": 13637,
+        "new_road_area_m2": 1363700.0,
+        "new_buildings": 625,
+        "building_area_m2": 250000.0,
+        "developed_area_m2": 1614000.0,
+        "developed_percent": 25.87907066236952,
+        "target_population": 20000,
+        "population": 20000,
+        "population_delta": 0,
+        "population_shortfall": 0,
+        "school_demand": 2500,
+        "school_served": 240,
+        "school_deficit": 2260,
+        "school_coverage_percent": 9.6,
+        "opened_schools": 3,
+        "no_route_places": 1784,
+        "no_capacity_places": 476
+      },
+      "zip_bytes": 6857
+    }
+  ]
+}
