@@ -1,9 +1,10 @@
 """Изображения исходной территории, проекта улиц и площади по классам."""
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from urban.model import BuildingPlan, ClassCode, RoadNetwork, Terrain
+from urban.services import SchoolAllocation
 
 
 # Подписи и цвета общие для карты и легенды интерфейса.
@@ -17,6 +18,7 @@ INPUT_LEGEND = {
 
 ROAD_LEGEND = {**INPUT_LEGEND, ClassCode.NEW_ROAD: ("Новая улица", "#ef4444")}
 BUILDING_LEGEND = {**ROAD_LEGEND, ClassCode.NEW_BUILDING: ("Новый дом", "#16a34a")}
+SCHOOL_LEGEND = {**BUILDING_LEGEND, ClassCode.NEW_SCHOOL: ("Новая школа", "#9333ea")}
 
 
 def terrain_image(terrain: Terrain) -> Image.Image:
@@ -76,3 +78,47 @@ def terrain_areas(terrain: Terrain) -> list[dict]:
             "Площадь, м²": count * terrain.cell_area_m2 if code != ClassCode.NODATA else None,
         })
     return rows
+
+
+def school_project_classes(plan: BuildingPlan, allocation: SchoolAllocation) -> np.ndarray:
+    """Отмечены только открытые школы, незанятый резерв остаётся свободным."""
+    project = building_project_classes(plan).copy()
+    for school in allocation.schools:
+        project[school.site.coordinate] = ClassCode.NEW_SCHOOL
+    project.setflags(write=False)
+    return project
+
+
+def school_project_image(plan: BuildingPlan, allocation: SchoolAllocation) -> Image.Image:
+    """Тот же масштаб, что у исходной карты; номера — только на предпросмотре."""
+    image = _classes_image(school_project_classes(plan, allocation), SCHOOL_LEGEND)
+    factor = image.width // plan.terrain.classes.shape[1]
+    draw = ImageDraw.Draw(image)
+    for school in allocation.schools:
+        row, column = school.site.coordinate
+        label = str(school.id)
+        left, top, right, bottom = draw.textbbox((0, 0), label, stroke_width=1)
+        x = min((column + 1) * factor + 2, image.width - right - 1)
+        y = max(-top, min(row * factor, image.height - bottom - 1))
+        # На правом краю подпись слева от площадки, чтобы не закрыть её.
+        if x < (column + 1) * factor:
+            x = max(-left, column * factor - right - 2)
+        draw.text((x, y), label, fill="white", stroke_width=1, stroke_fill="#111827")
+    return image
+
+
+def school_rows(allocation: SchoolAllocation) -> list[dict]:
+    return [{
+        "ID школы": school.id, "Строка": school.site.coordinate[0],
+        "Столбец": school.site.coordinate[1], "Вместимость, мест": school.capacity,
+        "Занято, мест": school.served,
+        "Загрузка, %": round(100 * school.served / school.capacity, 2),
+        "Макс. назначенный путь, м": school.max_assigned_distance_m,
+    } for school in allocation.schools]
+
+
+def school_deficit_reasons(allocation: SchoolAllocation) -> tuple[int, int]:
+    """Остатки спроса без достижимой школы и при наличии достижимой школы."""
+    no_route = sum(b.remaining for b in allocation.buildings if not b.reachable_school)
+    no_capacity = sum(b.remaining for b in allocation.buildings if b.reachable_school)
+    return no_route, no_capacity

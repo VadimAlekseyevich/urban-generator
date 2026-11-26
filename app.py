@@ -9,9 +9,10 @@ import streamlit as st
 from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
 from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
+from urban.services import SchoolAllocation, calculate_school_services
 from urban.report import (
-    BUILDING_LEGEND, INPUT_LEGEND, building_project_image, building_rows,
-    terrain_areas, terrain_image,
+    SCHOOL_LEGEND, INPUT_LEGEND, building_rows, school_project_image,
+    school_deficit_reasons, school_rows, terrain_areas, terrain_image,
 )
 
 
@@ -26,6 +27,30 @@ def show_legend(legend: dict) -> None:
             f'background:{color};border:1px solid #888;margin-right:0.5em"></span>'
             f"{int(code)} — {label}", unsafe_allow_html=True,
         )
+
+
+def show_school_results(allocation: SchoolAllocation) -> None:
+    st.subheader("Школы и доступность")
+    st.caption("Спрос и обслуживание относятся только к новым жителям. Свободные места существующих школ не учитываются.")
+    columns = st.columns(3)
+    columns[0].metric("Спрос, мест", allocation.demand)
+    columns[1].metric("Обслужено, мест", allocation.served)
+    columns[2].metric("Дефицит, мест", allocation.deficit)
+    coverage = f"{100 * allocation.served / allocation.demand:.2f}%" if allocation.demand else "нет спроса"
+    columns = st.columns(2)
+    columns[0].metric("Покрытие спроса", coverage)
+    columns[1].metric("Открыто школ, шт.", len(allocation.schools))
+    no_route, no_capacity = school_deficit_reasons(allocation)
+    columns = st.columns(2)
+    columns[0].metric("Нет школы в пределах пути, мест", no_route)
+    columns[1].metric("Не хватило мест в достижимой школе", no_capacity)
+    if allocation.deficit:
+        st.info("Дефицит: нет доступной открытой школы в пределах сетевого порога "
+                f"— {no_route} мест; не хватило вместимости достижимых школ — {no_capacity} мест.")
+    if allocation.schools:
+        st.dataframe(school_rows(allocation), hide_index=True)
+    else:
+        st.caption("Новые школы не открыты.")
 
 
 def main() -> None:
@@ -79,6 +104,7 @@ def main() -> None:
         st.session_state.legend_confirmed = False
         st.session_state.scale_confirmed = False
         st.session_state.building_plan = None
+        st.session_state.school_allocation = None
 
     if data is None:
         st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
@@ -145,6 +171,23 @@ def main() -> None:
             "Шаг улиц, ячеек", min_value=spacing_spec["min"], max_value=spacing_spec["max"],
             value=defaults.street_spacing_cells, step=1, key="street_spacing_cells",
         )
+        budget_spec = specifications["school_budget"].metadata
+        capacity_spec = specifications["school_capacity"].metadata
+        distance_spec = specifications["max_school_distance_m"].metadata
+        school_budget = st.number_input(
+            "Бюджет новых школ, шт.", min_value=budget_spec["min"], max_value=budget_spec["max"],
+            value=defaults.school_budget, step=1, key="school_budget",
+        )
+        school_capacity = st.number_input(
+            "Вместимость школы, мест", min_value=capacity_spec["min"], max_value=capacity_spec["max"],
+            value=defaults.school_capacity, step=1, key="school_capacity",
+        )
+        max_distance = st.number_input(
+            "Предельный путь до школы, м", min_value=float(distance_spec["min"]),
+            max_value=float(distance_spec["max"]), value=defaults.max_school_distance_m,
+            step=10.0, key="max_school_distance_m",
+            help="Расстояние по дорожной сети с учётом подходов к дому и школе.",
+        )
         seed = st.number_input(
             "Seed", min_value=seed_spec["min"], max_value=seed_spec["max"],
             value=defaults.seed, step=1, key="seed",
@@ -156,14 +199,19 @@ def main() -> None:
             scenario = Scenario(
                 target_population=target_population, floors=floors,
                 street_spacing_cells=spacing, seed=seed,
+                school_budget=school_budget, school_capacity=school_capacity,
+                max_school_distance_m=max_distance,
             )
             plan = generate_buildings(terrain, scenario)
+            allocation = calculate_school_services(plan)
         except ValueError:
             st.error("Не удалось сгенерировать проект. Проверьте параметры и повторите расчёт.")
         else:
             st.session_state.building_plan = plan
+            st.session_state.school_allocation = allocation
 
     plan = st.session_state.get("building_plan")
+    allocation = st.session_state.get("school_allocation")
     with map_container:
         left, right = st.columns(2)
         with left:
@@ -178,11 +226,11 @@ def main() -> None:
             else:
                 st.subheader("Проект")
                 st.image(
-                    building_project_image(plan),
-                    alt="Проект с новыми улицами и домами", width="stretch", output_format="PNG",
+                    school_project_image(plan, allocation),
+                    alt="Проект с новыми улицами, домами и школами", width="stretch", output_format="PNG",
                 )
         if plan is not None:
-            show_legend(BUILDING_LEGEND)
+            show_legend(SCHOOL_LEGEND)
 
     if plan is not None:
         used = plan.scenario
@@ -190,7 +238,9 @@ def main() -> None:
         st.caption(
             f"Параметры выполненного расчёта: цель {used.target_population} чел., "
             f"этажность {used.floors}, шаг улиц {used.street_spacing_cells} ячеек "
-            f"({used.street_spacing_cells * plan.terrain.pixel_size_m:g} м), seed {used.seed}."
+            f"({used.street_spacing_cells * plan.terrain.pixel_size_m:g} м), seed {used.seed}. "
+            f"Бюджет школ {used.school_budget}, вместимость {used.school_capacity} мест, "
+            f"предельный путь {used.max_school_distance_m:g} м."
         )
         st.metric("Новые улицы, ячеек", count)
         st.metric("Площадь новых улиц, м²", f"{count * plan.terrain.cell_area_m2:g}")
@@ -215,7 +265,7 @@ def main() -> None:
         if plan.buildings:
             with st.expander("Новые дома: параметры"):
                 st.dataframe(building_rows(plan), hide_index=True)
-    st.caption("Школы и распределение школьных мест пока недоступны.")
+        show_school_results(allocation)
 
 
 if __name__ == "__main__":
