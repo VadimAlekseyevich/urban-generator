@@ -3,8 +3,36 @@
 import argparse
 import json
 from pathlib import Path
+from threading import Event, Thread
+from time import monotonic
 
 from urban.osm_import import import_pbf, make_window
+
+
+def _import_with_progress(path, window, index):
+    """Периодический сигнал ожидания; не выдаёт его за процент прогресса."""
+    stop = Event()
+    activity = monotonic()
+
+    def report(message):
+        nonlocal activity
+        activity = monotonic()
+        print(message, flush=True)
+
+    def heartbeat():
+        while not stop.wait(5):
+            idle = monotonic() - activity
+            if idle >= 5:
+                print(f"  Последнее обновление {idle:.0f} с назад. "
+                      "Ожидание стадии чтения/сборки; процент неизвестен.", flush=True)
+
+    worker = Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        return import_pbf(path, window, index=index, progress=report)
+    finally:
+        stop.set()
+        worker.join()
 
 
 def main() -> None:
@@ -26,14 +54,15 @@ def main() -> None:
         window = make_window(args.lon, args.lat, args.size, args.pixel_size)
         print(f"Читаем локальный PBF: {args.pbf.name}; окно {window.crs}, {window.size}×{window.size}.",
               flush=True)
-        print("Региональный файл сканируется целиком; дождитесь завершения процесса.", flush=True)
-        data, meta = import_pbf(args.pbf, window, index=args.index)
+        data, meta = _import_with_progress(args.pbf, window, args.index)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("xb") as f:
             f.write(data)
         with sidecar.open("x", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
             f.write("\n")
+    except KeyboardInterrupt:
+        parser.exit(130, "\nИмпорт прерван пользователем.\n")
     except ImportError:
         parser.exit(2, "Нужен osmium: uv run --frozen --with osmium==4.3.2 python -m examples.import_osm ...\n")
     except (ValueError, OSError, RuntimeError) as error:
