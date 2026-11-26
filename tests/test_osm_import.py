@@ -45,7 +45,7 @@ def test_classification(tags, kind, expected):
     assert classify(tags, kind) == expected
 
 
-def test_real_pbf_import(tmp_path):
+def test_real_pbf_import(tmp_path, monkeypatch, capsys):
     osmium = pytest.importorskip("osmium")
     window = make_window(39.72, 54.62, 64, 10)
     nodes, ways, relations = [], [], []
@@ -80,7 +80,12 @@ def test_real_pbf_import(tmp_path):
     with osmium.SimpleWriter(str(pbf)) as writer:
         for obj in osmium.FileProcessor(str(xml)):
             writer.add(obj)
-    data, meta = import_pbf(pbf, window)
+    progress = []
+    data, meta = import_pbf(pbf, window, progress=progress.append, threads=2)
+    assert progress[0].startswith("[1/3]")
+    assert any("Кандидатов проверено:" in s for s in progress)
+    assert any("[2/3] Сканирование завершено" in s for s in progress)
+    assert progress[-1] == "[3/3] GeoTIFF проверен."
     terrain = read_terrain(data)
     assert terrain.crs.to_epsg() == 32637 and terrain.transform == window.transform
     assert terrain.classes.shape == (64,64)
@@ -101,3 +106,31 @@ def test_real_pbf_import(tmp_path):
     report = validate_result(plan, calculate_school_services(plan))
     assert report.metrics.new_buildings > 0
     np.testing.assert_array_equal(report.classes[terrain.classes != 0], terrain.classes[terrain.classes != 0])
+
+    # CLI пишет готовые файлы и показывает стадии. Повтор с другим числом
+    # потоков не должен менять классы или происхождение данных.
+    from examples.import_osm import main
+    import sys
+    output = tmp_path / "window.tif"
+    monkeypatch.setattr(sys, "argv", ["import_osm", str(pbf), "--lon", "39.72",
+                                    "--lat", "54.62", "--size", "64", "--threads", "1",
+                                    "--output", str(output)])
+    main()
+    assert "Сканирование завершено" in capsys.readouterr().out
+    np.testing.assert_array_equal(read_terrain(output.read_bytes()).classes, terrain.classes)
+    assert json.loads(output.with_suffix(".osm.json").read_text(encoding="utf-8")) == meta
+    with pytest.raises(ValueError, match="Число потоков"):
+        import_pbf(pbf, window, threads=0)
+
+
+def test_progress_worker_closes_on_failure(monkeypatch, capsys):
+    from examples import import_osm
+
+    def fail(path, window, **kwargs):
+        kwargs["progress"]("Контрольная стадия")
+        raise ValueError("Контрольная ошибка")
+
+    monkeypatch.setattr(import_osm, "import_pbf", fail)
+    with pytest.raises(ValueError, match="Контрольная ошибка"):
+        import_osm._import_with_progress(None, None, "flex_mem", 2)
+    assert "Контрольная стадия" in capsys.readouterr().out
