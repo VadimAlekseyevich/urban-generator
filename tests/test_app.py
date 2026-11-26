@@ -704,7 +704,7 @@ def test_failed_regeneration_preserves_comparison_and_downloads(monkeypatch):
 
 
 @pytest.mark.parametrize("classes, options, message", [
-    (np.array([[2, 9]], dtype=np.uint8), {}, "Коды вне легенды"),
+    (np.array([[2, 9]], dtype=np.uint8), {"crs": "EPSG:32637", "transform": from_origin(500000, 6200000, 10, 10)}, "Коды вне легенды"),
     (np.zeros((2, 257), dtype=np.uint8), {}, "256"),
     (np.array([[2, 0]], dtype=np.uint8), {"crs": "EPSG:4326", "transform": from_origin(37, 56, .001, .001)}, "проецированная CRS"),
 ])
