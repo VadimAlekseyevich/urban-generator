@@ -155,7 +155,7 @@ def _hash_file(path: Path, progress: Progress = _silent) -> str:
 
 
 def import_pbf(path: Path, window: Window, *, index: str = "flex_mem",
-               progress: Progress = _silent) -> tuple[bytes, dict]:
+               progress: Progress = _silent, threads: int = 4) -> tuple[bytes, dict]:
     """Сканирует PBF локально, хранит геометрии только выбранного окна.
 
     Отбор тегов выполняется в C++ до передачи объектов в Python.
@@ -169,15 +169,18 @@ def import_pbf(path: Path, window: Window, *, index: str = "flex_mem",
         raise ValueError("Укажите существующий файл .osm.pbf.")
     if index not in osmium.index.map_types():
         raise ValueError("Неподдерживаемый индекс osmium: " + index)
+    if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 16:
+        raise ValueError("Число потоков должно быть от 1 до 16.")
     source_hash = _hash_file(path, progress)
     factory = osmium.geom.GeoJSONFactory()
     shapes = {code: [] for code in (ClassCode.EXISTING_ROAD, ClassCode.BLOCKED, ClassCode.EXISTING_BUILDING)}
     invalid = 0
     examined = 0
-    progress(f"[2/3] Сканирование PBF: индекс {index}, подготовка отношений и чтение узлов.")
+    progress(f"[2/3] Сканирование PBF: индекс {index}, потоков чтения {threads}, подготовка отношений и чтение узлов.")
     # with_areas filters apply only to relation candidates in the first pass;
     # member ways (including untagged rings) are still available to the assembler.
-    processor = (osmium.FileProcessor(str(path)).with_locations(index)
+    pool = osmium.io.ThreadPool(threads, max_queue_size=4)
+    processor = (osmium.FileProcessor(str(path), thread_pool=pool).with_locations(index)
                  .with_areas(osmium.filter.KeyFilter(*AREA_KEYS))
                  .with_filter(osmium.filter.EntityFilter(osmium.osm.NODE | osmium.osm.WAY | osmium.osm.AREA))
                  .with_filter(osmium.filter.KeyFilter("amenity").enable_for(osmium.osm.NODE))
