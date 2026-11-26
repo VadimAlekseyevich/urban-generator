@@ -131,3 +131,19 @@ def test_empty_denominators():
     assert m.developed_percent is None and m.school_coverage_percent is None
     assert m.population == m.school_demand == m.school_deficit == 0
     assert m.population_shortfall == 600
+
+
+def test_full_report_repeat_preserves_classes_ids_and_metrics(demo):
+    from urban.report import export_result_zip
+
+    first_plan, first_allocation = demo
+    first = validate_result(first_plan, first_allocation)
+    second_plan = generate_buildings(first_plan.terrain, first_plan.scenario)
+    second = validate_result(second_plan, calculate_school_services(second_plan))
+    np.testing.assert_array_equal(first.classes, second.classes)
+    np.testing.assert_array_equal(first.plan.building_ids, second.plan.building_ids)
+    assert first.metrics == second.metrics
+    assert first.plan.buildings == second.plan.buildings
+    assert first.allocation.schools == second.allocation.schools
+    assert first.allocation.buildings == second.allocation.buildings
+    assert export_result_zip(first) == export_result_zip(second)

@@ -701,3 +701,24 @@ def test_failed_regeneration_preserves_comparison_and_downloads(monkeypatch):
     app.radio[0].set_value("Свой TIFF").run()
     assert app.session_state.variant_a is None and app.session_state.variant_b is None
     assert app.session_state.result_zip is None
+
+
+@pytest.mark.parametrize("classes, options, message", [
+    (np.array([[2, 9]], dtype=np.uint8), {"crs": "EPSG:32637", "transform": from_origin(500000, 6200000, 10, 10)}, "Коды вне легенды"),
+    (np.zeros((2, 257), dtype=np.uint8), {}, "256"),
+    (np.array([[2, 0]], dtype=np.uint8), {"crs": "EPSG:4326", "transform": from_origin(37, 56, .001, .001)}, "проецированная CRS"),
+])
+def test_invalid_replacement_cannot_relabel_completed_report(classes, options, message):
+    app = own_file_app(DEMO_PATH.read_bytes())
+    app.checkbox(key="legend_confirmed").check().run()
+    app.button[0].click().run()
+    previous = app.session_state.verified_report
+    assert previous is not None
+    app.file_uploader[0].set_value(("invalid.tif", upload_bytes(classes, **options), "image/tiff")).run()
+    assert not app.exception
+    assert any(message in error.value for error in app.error)
+    assert app.session_state.verified_report is None
+    assert app.session_state.result_zip is None
+    assert not app.session_state.terrain_ready
+    assert previous.plan.scenario.seed == 42
+    assert previous.plan.terrain.input_sha256 != app.session_state.source_identity[1]

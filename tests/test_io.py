@@ -267,3 +267,29 @@ def test_truncated_pixel_data_has_readable_error() -> None:
         first_strip_offset = image.tag_v2[273][0]
     with pytest.raises(TerrainReadError, match="декодировать TIFF"):
         read_terrain(data[:first_strip_offset + 1])
+
+
+def test_full_result_matches_between_geotiff_and_plain_tiff():
+    from urban.generate import generate_buildings
+    from urban.model import Scenario
+    from urban.report import validate_result
+    from urban.services import calculate_school_services
+
+    geo = read_terrain(DEMO_PATH.read_bytes())
+    plain = read_terrain(tiff_bytes(geo.classes, crs=None, transform=None), local_scale=10)
+    assert geo.input_sha256 != plain.input_sha256
+    assert geo.crs is not None and plain.crs is None
+    reports = []
+    for terrain in (geo, plain):
+        plan = generate_buildings(terrain, Scenario())
+        reports.append(validate_result(plan, calculate_school_services(plan)))
+    a, b = reports
+    np.testing.assert_array_equal(a.classes, b.classes)
+    np.testing.assert_array_equal(a.plan.building_ids, b.plan.building_ids)
+    np.testing.assert_array_equal(a.plan.roads.road_mask, b.plan.roads.road_mask)
+    np.testing.assert_array_equal(a.plan.reserve.mask, b.plan.reserve.mask)
+    np.testing.assert_array_equal(a.allocation.paths.distances_m, b.allocation.paths.distances_m)
+    assert a.plan.buildings == b.plan.buildings
+    assert a.allocation.schools == b.allocation.schools
+    assert a.allocation.buildings == b.allocation.buildings
+    assert a.metrics == b.metrics

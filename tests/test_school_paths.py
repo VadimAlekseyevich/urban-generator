@@ -94,3 +94,26 @@ def test_same_road_entry_still_requires_two_approaches():
     paths = calculate_school_paths(plan)
     assert paths.sites[0].road_entry == plan.buildings[0].road_entry == (0, 1)
     assert paths.distances_m[0, 0] == 20
+
+
+@pytest.mark.parametrize("threshold, expected_served", [(129.99, 0), (130.0, 4)])
+def test_u_threshold_controls_actual_assignments(threshold, expected_served):
+    from math import dist
+    from urban.report import validate_result
+    from urban.services import calculate_school_services
+
+    plan = u_plan()
+    plan = replace(plan, scenario=replace(plan.scenario, max_school_distance_m=threshold))
+    school_cell = plan.reserve.coordinates[0]
+    house_cell = plan.buildings[0].house_entry
+    direct = dist(school_cell, house_cell) * plan.terrain.pixel_size_m
+    assert direct < threshold
+    allocation = calculate_school_services(plan)
+    report = validate_result(plan, allocation)
+    assert allocation.paths.distances_m[0, 0] == 130
+    assert report.metrics.school_served == expected_served
+    assert report.metrics.school_deficit == 4 - expected_served
+    if expected_served:
+        assert allocation.schools[0].assignments[0].distance_m == 130
+    else:
+        assert not allocation.schools
