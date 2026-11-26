@@ -43,6 +43,36 @@ class CoordinateMode(StrEnum):
     GEOREFERENCED = "georeferenced"
 
 
+def validate_pixel_size_m(value: float) -> float:
+    """Проверка масштаба, общая для заголовка файла и модели."""
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, Real)
+        or not PIXEL_SIZE_M_RANGE[0] <= value <= PIXEL_SIZE_M_RANGE[1]
+    ):
+        raise ValueError("Шаг растра должен быть от 5 до 10 м/пиксель")
+    return float(value)
+
+
+def validate_georeference(crs: CRS | None, transform: Affine | None, pixel_size_m: float) -> None:
+    """Проверить метрическую сетку до чтения пикселей или создания Terrain."""
+    if not isinstance(crs, CRS) or not crs.is_projected:
+        raise ValueError("Нужна проецированная CRS с единицей метр")
+    if crs.linear_units_factor[1] != 1.0:
+        raise ValueError("Единица CRS должна быть метр")
+    if not isinstance(transform, Affine) or not all(isfinite(v) for v in transform):
+        raise ValueError("Нужна конечная affine-привязка GeoTIFF")
+    h = validate_pixel_size_m(pixel_size_m)
+    tolerance = h * GEOREFERENCE_REL_TOL
+    if (
+        abs(transform.a - h) > tolerance
+        or abs(transform.e + h) > tolerance
+        or abs(transform.b) > tolerance
+        or abs(transform.d) > tolerance
+    ):
+        raise ValueError("Нужен квадратный пиксель без поворота: восток по столбцам, юг по строкам")
+
+
 @dataclass(frozen=True, slots=True)
 class Scenario:
     """Параметры запуска; metadata полей доступны форме и генератору.
@@ -120,14 +150,8 @@ class Terrain:
         if not np.any(mask & (classes == ClassCode.EXISTING_ROAD)):
             raise ValueError("Нужна хотя бы одна исходная дорожная ячейка")
 
-        h = self.pixel_size_m
-        if (
-            isinstance(h, (bool, np.bool_))
-            or not isinstance(h, Real)
-            or not PIXEL_SIZE_M_RANGE[0] <= h <= PIXEL_SIZE_M_RANGE[1]
-        ):
-            raise ValueError("Шаг растра должен быть от 5 до 10 м/пиксель")
-        object.__setattr__(self, "pixel_size_m", float(h))
+        h = validate_pixel_size_m(self.pixel_size_m)
+        object.__setattr__(self, "pixel_size_m", h)
         if not isinstance(self.input_sha256, str) or not re.fullmatch(
             r"[0-9a-fA-F]{64}", self.input_sha256
         ):
@@ -144,31 +168,13 @@ class Terrain:
                 raise ValueError("В локальном режиме явно сбросьте исходную CRS и привязку")
             object.__setattr__(self, "transform", Affine(h, 0, 0, 0, -h, classes.shape[0] * h))
         else:
-            self._validate_georeference()
+            validate_georeference(self.crs, self.transform, h)
 
         normalized = np.where(mask, classes, ClassCode.NODATA).astype(np.uint8)
         normalized.setflags(write=False)
         mask.setflags(write=False)
         object.__setattr__(self, "classes", normalized)
         object.__setattr__(self, "valid_mask", mask)
-
-    def _validate_georeference(self) -> None:
-        if not isinstance(self.crs, CRS) or not self.crs.is_projected:
-            raise ValueError("Нужна проецированная CRS с единицей метр")
-        if self.crs.linear_units_factor[1] != 1.0:
-            raise ValueError("Единица CRS должна быть метр")
-        transform = self.transform
-        if not isinstance(transform, Affine) or not all(isfinite(v) for v in transform):
-            raise ValueError("Нужна конечная affine-привязка GeoTIFF")
-        h = self.pixel_size_m
-        tolerance = h * GEOREFERENCE_REL_TOL
-        if (
-            abs(transform.a - h) > tolerance
-            or abs(transform.e + h) > tolerance
-            or abs(transform.b) > tolerance
-            or abs(transform.d) > tolerance
-        ):
-            raise ValueError("Нужен квадратный пиксель без поворота: восток по столбцам, юг по строкам")
 
     @property
     def cell_area_m2(self) -> float:
