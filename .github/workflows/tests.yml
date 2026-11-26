@@ -23,5 +23,5 @@ jobs:
           sudo unshare --net -- bash -c '
             set -e
             ip link set lo up
-            exec setpriv --reuid "$1" --regid "$2" --init-groups env URBAN_OFFLINE_CHECK=1 "$3" -m pytest -q -s tests/test_offline_demo.py
-          ' _ "$(id -u)" "$(id -g)" "$PWD/.venv/bin/python"
+            exec setpriv --reuid "$1" --regid "$2" --init-groups env HOME="$4" URBAN_OFFLINE_CHECK=1 "$3" -m pytest -q -s tests/test_offline_demo.py
+          ' _ "$(id -u)" "$(id -g)" "$PWD/.venv/bin/python" "$HOME"
