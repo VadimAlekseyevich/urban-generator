@@ -41,9 +41,9 @@ def test_zero_budget_keeps_all_demand_unserved():
 
 
 def test_greedy_gain_uses_residual_demand_and_stops_without_gain():
-    # Первая площадка имеет выигрыш 4, вторая и третья 5;
+    # Первая и третья площадки имеют выигрыш 4, вторая — 5;
     # после открытия второй третья теряет выигрыш, первая сохраняет 3.
-    result = allocate([[50, np.inf], [100, 50], [100, 50]], school_budget=3)
+    result = allocate([[50, np.inf], [100, 50], [np.inf, 50]], school_budget=3)
     assert [s.site.coordinate for s in result.schools] == [(0, 1), (0, 0)]
     assert [s.served for s in result.schools] == [5, 3]
     assert result.served == 8
