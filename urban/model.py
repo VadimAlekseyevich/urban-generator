@@ -37,6 +37,11 @@ USEFUL_AREA_FRACTION = 0.8
 AREA_PER_RESIDENT_M2 = 30.0
 SCHOOLCHILD_FRACTION = 0.12
 
+ROAD_PROXIMITY_WEIGHT = 0.7
+BARRIER_CLEARANCE_WEIGHT = 0.3
+ROAD_DISTANCE_SCALE_M = 300.0
+BARRIER_DISTANCE_SCALE_M = 50.0
+
 
 class CoordinateMode(StrEnum):
     LOCAL = "local"
@@ -179,3 +184,18 @@ class Terrain:
     @property
     def cell_area_m2(self) -> float:
         return self.pixel_size_m**2
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Suitability:
+    """Данные первого шага генерации на исходной сетке.
+
+    Расстояния между центрами ячеек измеряются в метрах. scores содержит
+    балл S на free_mask и -inf вне неё: такие ячейки исключены из ранжирования.
+    Массивы, возвращённые calculate_suitability, защищены от записи.
+    """
+
+    free_mask: NDArray[np.bool_]
+    road_distance_m: NDArray[np.float64]
+    barrier_distance_m: NDArray[np.float64]
+    scores: NDArray[np.float64]
