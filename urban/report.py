@@ -492,3 +492,35 @@ def export_result_zip(report: VerifiedReport) -> bytes:
             # Фиксированная дата ZIP исключает зависимость от времени выгрузки.
             archive.writestr(ZipInfo(name), data, compress_type=ZIP_DEFLATED)
     return output.getvalue()
+
+
+def comparison_rows(a: VerifiedReport, b: VerifiedReport) -> list[dict]:
+    """Сравнивает только завершённые отчёты одной исходной сетки (§5)."""
+    ta, tb = a.plan.terrain, b.plan.terrain
+    if (
+        ta.input_sha256 != tb.input_sha256
+        or ta.coordinate_mode != tb.coordinate_mode
+        or ta.pixel_size_m != tb.pixel_size_m
+        or ta.crs != tb.crs
+        or ta.transform != tb.transform
+        or ta.classes.shape != tb.classes.shape
+        or not np.array_equal(ta.classes, tb.classes)
+    ):
+        raise ReportValidationError("Для сравнения нужна одна исходная карта и один масштаб.")
+    ma, mb = asdict(a.metrics), asdict(b.metrics)
+    return [
+        {
+            "metric": key, "unit": unit, "A": ma[key], "B": mb[key],
+            "delta": mb[key] - ma[key] if ma[key] is not None and mb[key] is not None else None,
+        }
+        for key, unit in METRIC_UNITS.items()
+    ]
+
+
+def export_comparison_csv(a: VerifiedReport, b: VerifiedReport) -> bytes:
+    """Таблица A/B с разностью B − A; отсутствующие значения — пустые поля."""
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=("metric", "unit", "A", "B", "delta"), lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(comparison_rows(a, b))
+    return output.getvalue().encode("utf-8")
