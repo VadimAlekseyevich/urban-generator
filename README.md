@@ -150,3 +150,39 @@ uv run python -m examples.create_demo
 ```
 
 [Описание схемы, легенды и проверок](examples/README.md). Данные создаются локально без сети и случайности; seed применяется к будущему сценарию застройки.
+
+
+## Экспорт завершённого запуска из вычислительного ядра
+
+```python
+from pathlib import Path
+
+from urban.generate import generate_buildings
+from urban.io import read_terrain
+from urban.model import Scenario
+from urban.report import export_result_zip, validate_result
+from urban.services import calculate_school_services
+
+terrain = read_terrain(Path("examples/demo.tif").read_bytes())
+plan = generate_buildings(terrain, Scenario())
+report = validate_result(plan, calculate_school_services(plan))
+Path("result.zip").write_bytes(export_result_zip(report))
+```
+
+В архиве три файла:
+
+- `result.tif` — одноканальный растр UInt8 с кодами 0–6, NoData=255,
+  цветовой таблицей и легендой. Для GeoTIFF сохраняются CRS и affine-transform.
+  Локальный TIFF не получает фиктивную геопривязку; масштаб и начало
+  координат в левом нижнем углу записаны в JSON.
+- `metrics.json` — версии схемы и алгоритма (1), SHA-256 входа, параметры,
+  коэффициенты модели, координатный режим, метрики с единицами, причины
+  дефицита и сведения об открытых школах. Неопределённые проценты — null.
+  Порядок коэффициентов affine: a, b, c, d, e, f (как в Rasterio).
+- `buildings.csv` — UTF-8, заголовок даже без домов; ID, строка и столбец
+  левого верхнего угла (от нуля), площадь, этажи, жители, спрос и обслуженные места.
+
+Экспорт повторно проверяет согласованность отчёта; повреждённый результат
+не выдаётся. Итоговый TIFF можно открыть в GIS, но это не исходная карта
+для повторной генерации: входной контракт допускает только классы 0–3 и 255.
+Кнопка скачивания и сравнение A/B подключаются в задаче #17.
