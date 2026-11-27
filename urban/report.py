@@ -17,7 +17,7 @@ from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
 
 from urban.model import (
-    AREA_PER_RESIDENT_M2, HOUSE_SIDE_CELLS, SCHOOLCHILD_FRACTION, USEFUL_AREA_FRACTION,
+    HOUSE_SIDE_CELLS,
     BARRIER_CLEARANCE_WEIGHT, BARRIER_DISTANCE_SCALE_M, ROAD_DISTANCE_SCALE_M,
     ROAD_PROXIMITY_WEIGHT, BuildingPlan, ClassCode, CoordinateMode, RoadNetwork, Terrain,
 )
@@ -289,8 +289,8 @@ def validate_result(
         footprint_area = side**2 * area
         _require(building.floors == scenario.floors and building.footprint_area_m2 == footprint_area,
                  "Некорректная площадь или этажность дома")
-        residents = floor(footprint_area * scenario.floors * USEFUL_AREA_FRACTION / AREA_PER_RESIDENT_M2 + 0.5)
-        demand = floor(SCHOOLCHILD_FRACTION * residents + 0.5)
+        residents = floor(footprint_area * scenario.floors * scenario.demographic_profile.useful_area_fraction / scenario.demographic_profile.area_per_resident_m2 + 0.5)
+        demand = floor(scenario.demographic_profile.schoolchild_fraction * residents + 0.5)
         _require(building.population == residents and building.school_demand == demand,
                  "Некорректная демография дома")
         population += residents
@@ -411,9 +411,9 @@ def _export_metadata(report: VerifiedReport) -> dict:
         "seed": plan.scenario.seed,
         "model_coefficients": {
             "house_side_cells": HOUSE_SIDE_CELLS,
-            "useful_area_fraction": USEFUL_AREA_FRACTION,
-            "area_per_resident_m2": AREA_PER_RESIDENT_M2,
-            "schoolchild_fraction": SCHOOLCHILD_FRACTION,
+            "useful_area_fraction": plan.scenario.demographic_profile.useful_area_fraction,
+            "area_per_resident_m2": plan.scenario.demographic_profile.area_per_resident_m2,
+            "schoolchild_fraction": plan.scenario.demographic_profile.schoolchild_fraction,
             "road_proximity_weight": ROAD_PROXIMITY_WEIGHT,
             "barrier_clearance_weight": BARRIER_CLEARANCE_WEIGHT,
             "road_distance_scale_m": ROAD_DISTANCE_SCALE_M,

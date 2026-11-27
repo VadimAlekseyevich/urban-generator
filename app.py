@@ -16,7 +16,7 @@ from urban.io import TerrainReadError, read_terrain
 from urban.vector_import import read_geojson
 from urban.osm_cache import prepare_pbf
 from urban.osm_import import make_window
-from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
+from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario, DemographicProfile
 from urban.services import calculate_school_services
 from urban.report import (
     SCHOOL_LEGEND, INPUT_LEGEND, building_rows, school_project_image,
@@ -90,10 +90,13 @@ METRIC_LABELS = {
 
 def scenario_summary(report: VerifiedReport) -> str:
     s = report.plan.scenario
+    p = s.demographic_profile
     return (
         f"Цель {s.target_population} чел. · этажи {s.floors} · шаг улиц {s.street_spacing_cells} "
         f"ячеек · бюджет школ {s.school_budget} · вместимость {s.school_capacity} мест · "
-        f"путь {s.max_school_distance_m:g} м · seed {s.seed}"
+        f"путь {s.max_school_distance_m:g} м · seed {s.seed} · "
+        f"профиль: {p.area_per_resident_m2:g} м²/чел., полезная доля {100*p.useful_area_fraction:g}%, "
+        f"школьники {100*p.schoolchild_fraction:g}%. Источник: {p.source_note}"
     )
 
 
@@ -443,14 +446,28 @@ def main() -> None:
             value=defaults.seed, step=1, key="seed",
             help="Одинаковые файл, масштаб, параметры и seed дают одинаковый проект.",
         )
+        profile_defaults = defaults.demographic_profile
+        profile_specs = {f.name: f.metadata for f in fields(DemographicProfile)}
+        with st.expander("Демографический профиль"):
+            st.caption("Исходный сценарий: 30 м²/чел., 80% полезной площади, 12% школьников. "
+                       "Диапазоны ниже — сценарные ограничения ввода, не нормативы.")
+            area_per_person = st.number_input("Площадь на человека, м²/чел.", min_value=profile_specs["area_per_resident_m2"]["min"],
+                                              max_value=profile_specs["area_per_resident_m2"]["max"], value=profile_defaults.area_per_resident_m2, step=0.5, key="profile_area")
+            useful_percent = st.number_input("Полезная площадь, %", min_value=100*profile_specs["useful_area_fraction"]["min"], max_value=100*profile_specs["useful_area_fraction"]["max"],
+                                             value=100*profile_defaults.useful_area_fraction, step=0.5, key="profile_useful")
+            schoolchild_percent = st.number_input("Доля школьников, %", min_value=100*profile_specs["schoolchild_fraction"]["min"], max_value=100*profile_specs["schoolchild_fraction"]["max"],
+                                                  value=100*profile_defaults.schoolchild_fraction, step=0.5, key="profile_schoolchildren")
+            profile_note = st.text_area("Источник / заметка профиля", value=profile_defaults.source_note,
+                                        max_chars=1000, key="profile_note")
         submitted = st.form_submit_button("Сгенерировать", disabled=not st.session_state.terrain_ready)
     if submitted and st.session_state.terrain_ready:
         try:
+            profile = DemographicProfile(area_per_person, useful_percent/100, schoolchild_percent/100, profile_note)
             scenario = Scenario(
                 target_population=target_population, floors=floors,
                 street_spacing_cells=spacing, seed=seed,
                 school_budget=school_budget, school_capacity=school_capacity,
-                max_school_distance_m=max_distance,
+                max_school_distance_m=max_distance, demographic_profile=profile,
             )
             plan = generate_buildings(terrain, scenario)
             allocation = calculate_school_services(plan)
@@ -480,6 +497,10 @@ def main() -> None:
 
     if plan is not None:
         used = plan.scenario
+        profile = used.demographic_profile
+        st.caption(f"Профиль выполненного расчёта: {profile.area_per_resident_m2:g} м²/чел.; "
+                   f"полезная площадь {100*profile.useful_area_fraction:g}%; школьники {100*profile.schoolchild_fraction:g}%. "
+                   f"Источник: {profile.source_note}")
         metrics = report.metrics
         count = metrics.new_road_cells
         st.caption(
@@ -489,6 +510,8 @@ def main() -> None:
             f"Бюджет школ {used.school_budget}, вместимость {used.school_capacity} мест, "
             f"предельный путь {used.max_school_distance_m:g} м."
         )
+        if metrics.new_buildings and metrics.population == 0:
+            st.info("Выбранный профиль даёт 0 жителей на дом после округления; при этих коэффициентах цель населения недостижима.")
         st.metric("Новые улицы, ячеек", count)
         st.metric("Площадь новых улиц, м²", f"{metrics.new_road_area_m2:g}")
         if count == 0:

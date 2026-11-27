@@ -91,6 +91,32 @@ def validate_georeference(crs: CRS | None, transform: Affine | None, pixel_size_
 
 
 @dataclass(frozen=True, slots=True)
+class DemographicProfile:
+    """Сценарные коэффициенты; значения по умолчанию воспроизводят прежний MVP."""
+
+    area_per_resident_m2: float = field(default=AREA_PER_RESIDENT_M2,
+                                      metadata={"min": 5.0, "max": 200.0, "unit": "м²/чел."})
+    useful_area_fraction: float = field(default=USEFUL_AREA_FRACTION,
+                                       metadata={"min": 0.05, "max": 1.0, "unit": "доля"})
+    schoolchild_fraction: float = field(default=SCHOOLCHILD_FRACTION,
+                                       metadata={"min": 0.0, "max": 1.0, "unit": "доля"})
+    source_note: str = "Сценарные коэффициенты MVP; не статистика конкретного города"
+
+    def __post_init__(self):
+        for parameter in fields(self):
+            value = getattr(self, parameter.name)
+            if parameter.name == "source_note":
+                if not isinstance(value, str) or not value.strip() or len(value) > 1000:
+                    raise ValueError("Укажите источник/заметку демографического профиля: 1–1000 символов")
+                object.__setattr__(self, parameter.name, value.strip())
+                continue
+            if (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+                    or not parameter.metadata["min"] <= value <= parameter.metadata["max"]):
+                raise ValueError(f"{parameter.name}: значение должно быть от {parameter.metadata['min']} до {parameter.metadata['max']}")
+            object.__setattr__(self, parameter.name, float(value))
+
+
+@dataclass(frozen=True, slots=True)
 class Scenario:
     """Параметры запуска; metadata полей доступны форме и генератору.
 
@@ -113,10 +139,15 @@ class Scenario:
         default=400.0, metadata={"min": 50, "max": 2_000, "unit": "м"}
     )
     seed: int = field(default=42, metadata={"min": 0, "max": 2**32 - 1, "unit": ""})
+    demographic_profile: DemographicProfile = field(default_factory=DemographicProfile, metadata={"unit": "профиль"})
 
     def __post_init__(self) -> None:
         for parameter in fields(self):
             value = getattr(self, parameter.name)
+            if parameter.name == "demographic_profile":
+                if not isinstance(value, DemographicProfile):
+                    raise ValueError("demographic_profile: нужен DemographicProfile")
+                continue
             expected_type = Real if parameter.name == "max_school_distance_m" else Integral
             if isinstance(value, (bool, np.bool_)) or not isinstance(value, expected_type):
                 raise ValueError(f"{parameter.name}: недопустимый тип параметра")

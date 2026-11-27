@@ -34,11 +34,13 @@ def test_demo_defaults_and_units() -> None:
         "school_capacity": 80,
         "max_school_distance_m": 400,
         "seed": 42,
+        "demographic_profile": {"area_per_resident_m2": 30.0, "useful_area_fraction": 0.8,
+                                "schoolchild_fraction": 0.12, "source_note": "Сценарные коэффициенты MVP; не статистика конкретного города"},
     }
     assert {f.name: f.metadata["unit"] for f in fields(Scenario)} == {
         "target_population": "чел.", "floors": "этажей",
         "street_spacing_cells": "ячеек", "school_budget": "шт.",
-        "school_capacity": "мест", "max_school_distance_m": "м", "seed": "",
+        "school_capacity": "мест", "max_school_distance_m": "м", "seed": "", "demographic_profile": "профиль",
     }
     assert HOUSE_SIDE_CELLS == 2
     assert USEFUL_AREA_FRACTION == 0.8

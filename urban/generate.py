@@ -7,7 +7,6 @@ from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import binary_dilation, binary_propagation, distance_transform_edt, generate_binary_structure
 
 from urban.model import (
-    AREA_PER_RESIDENT_M2,
     BARRIER_CLEARANCE_WEIGHT,
     BARRIER_DISTANCE_SCALE_M,
     HOUSE_SIDE_CELLS,
@@ -15,8 +14,6 @@ from urban.model import (
     ROAD_PROXIMITY_WEIGHT,
     SCHOOL_SECTOR_COLUMNS,
     SCHOOL_SECTOR_ROWS,
-    SCHOOLCHILD_FRACTION,
-    USEFUL_AREA_FRACTION,
     Building,
     BuildingPlan,
     ClassCode,
@@ -150,8 +147,8 @@ def place_buildings(
         shuffled = rng.permutation(len(candidates))
         order = shuffled[np.argsort(-scores[shuffled], kind="stable")]
         area = side**2 * terrain.cell_area_m2
-        residents = floor(area * scenario.floors * USEFUL_AREA_FRACTION / AREA_PER_RESIDENT_M2 + 0.5)
-        demand = floor(SCHOOLCHILD_FRACTION * residents + 0.5)
+        residents = floor(area * scenario.floors * scenario.demographic_profile.useful_area_fraction / scenario.demographic_profile.area_per_resident_m2 + 0.5)
+        demand = floor(scenario.demographic_profile.schoolchild_fraction * residents + 0.5)
         population = 0
         for index in order:
             row, column = (int(value) for value in candidates[index])
