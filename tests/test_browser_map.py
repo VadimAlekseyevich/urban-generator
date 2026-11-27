@@ -15,6 +15,7 @@ from rasterio.transform import from_origin
 from urban.generate import generate_buildings
 from urban.io import read_terrain
 from urban.model import Scenario
+from urban.services import calculate_school_services
 
 
 pytestmark = pytest.mark.skipif(os.environ.get("URBAN_BROWSER_CHECK") != "1", reason="Chromium runs in browser CI job")
@@ -91,6 +92,7 @@ def download_zip(page):
 
 
 def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
+    from playwright.sync_api import expect
     page,count=browser_app
     page.get_by_text("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255",exact=True).click()
     page.get_by_role("button",name="Сгенерировать",exact=True).click()
@@ -109,12 +111,26 @@ def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
         box=canvas.bounding_box()
         page.mouse.move(box["x"]+dims["x"]+(house.column+1)*dims["s"],
                         box["y"]+dims["y"]+(house.row+1)*dims["s"])
+        old_scale=canvas.get_attribute("data-scale")
         page.mouse.wheel(0,-300)
+        expect(canvas).not_to_have_attribute("data-scale",old_scale)
         assert canvas.evaluate("e=>+e.dataset.scale") > dims["s"]
         for dr,dc in ((0,0),(0,1),(1,0),(1,1)):
             click_cell(page,house.row+dr,house.column+dc)
             page.get_by_text(f"Дом №{house.id}",exact=True).wait_for()
             assert f"Жителей: {house.population}" in page.locator(".object-details").inner_text()
+    school=calculate_school_services(plan).schools[0]
+    page.get_by_role("button",name="Общий вид",exact=True).click()
+    click_cell(page,*school.site.coordinate)
+    expect(page.locator(".object-title")).to_have_text(f"Школа №{school.id}")
+    assert f"Вместимость: {school.capacity}" in page.locator(".object-details").inner_text()
+    click_cell(page,house.row,house.column)
+    canvas=page.locator(".viewer canvas");canvas.scroll_into_view_if_needed()
+    before=canvas.get_attribute("data-offset-x");box=canvas.bounding_box()
+    page.mouse.move(box["x"]+box["width"]/2,box["y"]+box["height"]/2)
+    page.mouse.down();page.mouse.move(box["x"]+box["width"]/2+24,box["y"]+box["height"]/2+16);page.mouse.up()
+    expect(canvas).not_to_have_attribute("data-offset-x",before)
+    page.get_by_role("button",name="Общий вид",exact=True).click()
     page.get_by_label("Новая улица",exact=True).uncheck()
     page.get_by_label("Новая улица",exact=True).check()
     page.get_by_role("button",name="Линейка",exact=True).click()
@@ -129,7 +145,7 @@ def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
     artifact.mkdir(parents=True,exist_ok=True)
     page.locator(".viewer").screenshot(path=str(artifact/"viewer.png"))
     page.get_by_text("Свой TIFF",exact=True).click()
-    assert page.locator(".viewer canvas").count()==0
+    expect(page.locator(".viewer canvas")).to_have_count(0)
 
 
 @pytest.mark.parametrize("local",[False,True])
