@@ -1,9 +1,12 @@
 """Чтение одной тематической карты TIFF из байтов, без файлов на диске."""
 
 from hashlib import sha256
+from math import floor, isfinite
 import warnings
 
 import numpy as np
+from rasterio.crs import CRS
+from rasterio.features import rasterize
 from rasterio.errors import NotGeoreferencedWarning, RasterioError
 from rasterio.io import DatasetReader, MemoryFile
 from rasterio.transform import Affine
@@ -22,6 +25,35 @@ from urban.model import (
 
 class TerrainReadError(ValueError):
     """Ошибка входа с сообщением, пригодным для показа в интерфейсе."""
+
+
+def local_metric_crs(lon: float, lat: float) -> CRS:
+    """Местная UTM, общая для векторных источников и OSM."""
+    if not (isfinite(lon) and isfinite(lat) and -180 < lon < 180 and -80 <= lat <= 84):
+        raise ValueError("Центр должен быть в пределах UTM: долгота (-180,180), широта [-80,84].")
+    zone = min(60, floor((lon + 180) / 6) + 1)
+    if 56 <= lat < 64 and 3 <= lon < 12:
+        zone = 32
+    if 72 <= lat < 84:
+        for west, east, special in ((0, 9, 31), (9, 21, 33), (21, 33, 35), (33, 42, 37)):
+            if west <= lon < east:
+                zone = special
+    return CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
+
+
+def rasterize_classes(shapes: dict, shape: tuple[int, int], transform: Affine) -> np.ndarray:
+    """Единый приоритет OSM/GeoJSON: здания > запреты > дороги > свободное.
+
+    all_touched сохраняет узкие объекты на грубой сетке; растеризация
+    не исправляет разрывы дорожной топологии.
+    """
+    classes = np.zeros(shape, dtype=np.uint8)
+    for code in (ClassCode.EXISTING_ROAD, ClassCode.BLOCKED, ClassCode.EXISTING_BUILDING):
+        if shapes[code]:
+            mask = rasterize(shapes[code], out_shape=shape, transform=transform,
+                             fill=0, default_value=1, all_touched=True, dtype="uint8")
+            classes[mask != 0] = code
+    return classes
 
 
 def read_terrain(
