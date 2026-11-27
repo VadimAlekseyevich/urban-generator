@@ -71,7 +71,7 @@ runpy.run_path({str(ROOT / 'app.py')!r}, run_name='__main__')
 
 
 def click_cell(page, row, column):
-    canvas=page.locator("canvas")
+    canvas=page.locator(".viewer canvas")
     canvas.scroll_into_view_if_needed()
     dims=canvas.evaluate("e=>({s:+e.dataset.scale,x:+e.dataset.offsetX,y:+e.dataset.offsetY})")
     canvas.click(position={"x":dims["x"]+(column+.5)*dims["s"],"y":dims["y"]+(row+.5)*dims["s"]})
@@ -97,7 +97,7 @@ def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
     for viewport in ({"width":1280,"height":1000},{"width":900,"height":850}):
         page.set_viewport_size(viewport)
         page.get_by_role("button",name="Общий вид",exact=True).click()
-        canvas=page.locator("canvas");canvas.scroll_into_view_if_needed()
+        canvas=page.locator(".viewer canvas");canvas.scroll_into_view_if_needed()
         dims=canvas.evaluate("e=>({s:+e.dataset.scale,x:+e.dataset.offsetX,y:+e.dataset.offsetY})")
         box=canvas.bounding_box()
         page.mouse.move(box["x"]+dims["x"]+(house.column+1)*dims["s"],
@@ -122,7 +122,7 @@ def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
     artifact.mkdir(parents=True,exist_ok=True)
     page.locator(".viewer").screenshot(path=str(artifact/"viewer.png"))
     page.get_by_text("Свой TIFF",exact=True).click()
-    assert page.locator("canvas").count()==0
+    assert page.locator(".viewer canvas").count()==0
 
 
 @pytest.mark.parametrize("local",[False,True])
@@ -142,6 +142,6 @@ def test_rectangular_raster_last_cell_and_offline_loading(browser_app,tmp_path,l
         page.get_by_label("Шаг растра, м/пиксель",exact=True).fill("10")
         page.get_by_label("Шаг растра, м/пиксель",exact=True).press("Enter")
         page.get_by_label("Сбросить геопривязку файла",exact=True).check()
-    page.locator('canvas[data-columns="64"][data-rows="32"]').wait_for()
+    page.locator('.viewer canvas[data-columns="64"][data-rows="32"]').wait_for()
     click_cell(page,31,63)
     assert "Строка 31, столбец 63" in page.locator(".position").inner_text()
