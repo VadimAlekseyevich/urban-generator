@@ -7,6 +7,24 @@ on:
 permissions:
   contents: read
 jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run --frozen --with playwright==1.56.0 python -m playwright install --with-deps chromium
+      - run: uv run --frozen --with playwright==1.56.0 pytest -q tests/test_browser_map.py
+        env:
+          URBAN_BROWSER_CHECK: "1"
+          URBAN_BROWSER_ARTIFACTS: ${{ runner.temp }}/urban-browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: map-browser
+          path: ${{ runner.temp }}/urban-browser
   pytest:
     runs-on: ubuntu-latest
     steps:
