@@ -142,6 +142,8 @@ class Terrain:
     Чтение TIFF и проверка его заголовка выполняются загрузчиком.
     Для векторного входа vector_source сохраняет оригинальные байты,
     манифест ID/ролей/источников; input_sha256 относится к GeoJSON.
+    osm_import_json сохраняет JSON происхождения подготовленного OSM TIFF;
+    его SHA-256 относится к TIFF, SHA PBF находится внутри метаданных.
     """
 
     classes: NDArray[np.uint8]
@@ -152,6 +154,7 @@ class Terrain:
     crs: CRS | None = None
     transform: Affine | None = None
     vector_source: VectorSource | None = None
+    osm_import_json: str | None = None
 
     def __post_init__(self) -> None:
         classes = np.asarray(self.classes)

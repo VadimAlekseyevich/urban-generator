@@ -26,4 +26,4 @@ jobs:
             exec setpriv --reuid "$1" --regid "$2" --init-groups env HOME="$4" URBAN_OFFLINE_CHECK=1 "$3" -m pytest -q -s tests/test_offline_demo.py
           ' _ "$(id -u)" "$(id -g)" "$PWD/.venv/bin/python" "$HOME"
       - name: OSM PBF integration
-        run: uv run --frozen --with osmium==4.3.2 pytest -q tests/test_osm_import.py
+        run: uv run --frozen --with osmium==4.3.2 pytest -q tests/test_osm_import.py tests/test_osm_cache.py tests/test_osm_app.py
