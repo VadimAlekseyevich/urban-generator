@@ -1,6 +1,7 @@
 """Данные просмотра и выбор объектов только из завершённого отчёта."""
 
 from numbers import Integral
+import json
 
 from urban.model import Terrain
 from urban.report import SCHOOL_LEGEND, VerifiedReport
@@ -45,7 +46,14 @@ def viewer_payload(terrain: Terrain, report: VerifiedReport | None = None) -> di
             key = f"school-{school.id}"
             objects[key] = object_at(report, row, col)
             ids[row * width + col] = key
-    return {"width": width, "height": height, "step": terrain.pixel_size_m,
+    contours = []
+    if terrain.development_source is not None:
+        geometry = json.loads(terrain.development_source.manifest_json)["geometry_projected"]
+        polygons = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+        inverse = ~terrain.transform
+        contours = [[[inverse.a*x+inverse.b*y+inverse.c, inverse.d*x+inverse.e*y+inverse.f] for x,y in ring]
+                    for polygon in polygons for ring in polygon]
+    return {"width": width, "height": height, "step": terrain.pixel_size_m, "contours": contours,
             "transform": list(terrain.transform)[:6], "original": terrain.classes.ravel().tolist(),
             "project": report.classes.ravel().tolist() if report is not None else None,
             "objects": objects, "ids": ids,

@@ -35,6 +35,14 @@ export default function(component) {
     ctx.drawImage(raster,view.x,view.y,d.width*view.scale,d.height*view.scale);
     ctx.strokeStyle='#dbeafe'; ctx.lineWidth=1;
     ctx.strokeRect(view.x,view.y,d.width*view.scale,d.height*view.scale);
+    if (d.contours && d.contours.length) {
+      ctx.save();ctx.beginPath();ctx.rect(view.x,view.y,d.width*view.scale,d.height*view.scale);ctx.clip();
+      ctx.strokeStyle='#facc15';ctx.lineWidth=2;ctx.setLineDash([7,4]);
+      for(const ring of d.contours) {
+        ctx.beginPath();ring.forEach(([x,y],i)=>{i?ctx.lineTo(view.x+x*view.scale,view.y+y*view.scale):ctx.moveTo(view.x+x*view.scale,view.y+y*view.scale);});ctx.stroke();
+      }
+      ctx.restore();
+    }
     const o = d.objects[view.selected];
     if (o && view.mode === 'project' && !view.hidden.includes(o.kind==='house'?5:6)) {
       ctx.strokeStyle='#facc15'; ctx.lineWidth=3;

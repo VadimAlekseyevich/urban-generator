@@ -11,6 +11,7 @@ from rasterio.errors import RasterioError
 
 from urban.generate import generate_buildings
 from urban.map_ui import show_map
+from urban.development import apply_development_boundary, clear_development_boundary
 from urban.io import TerrainReadError, read_terrain
 from urban.vector_import import read_geojson
 from urban.osm_cache import prepare_pbf
@@ -161,6 +162,13 @@ def reset_project(input_identity) -> None:
         st.session_state.variant_b = None
 
 
+def reset_source(identity):
+    if st.session_state.get("base_input_identity") != identity:
+        st.session_state.base_input_identity = identity
+        st.session_state.pop("development_boundary", None)
+        reset_project((identity, None))
+
+
 def read_file_source(source: str, demo_bytes: bytes):
     st.session_state.terrain = None
     st.session_state.terrain_ready = False
@@ -219,7 +227,7 @@ def read_file_source(source: str, demo_bytes: bytes):
             st.caption("Локальное начало координат — левый нижний угол карты. Сброс удаляет исходную привязку.")
 
     input_identity = (source_identity, local, local_scale, discard, vector_scale)
-    reset_project(input_identity)
+    reset_source(input_identity)
 
     if data is None:
         st.info("Загрузите GeoJSON FeatureCollection с ролями объектов, до 8 МиБ." if source == "GeoJSON"
@@ -302,7 +310,7 @@ def main() -> None:
     if source == "OSM PBF":
         prepared = show_osm_source()
         if prepared is not None:
-            reset_project(("OSM PBF", prepared.cache_key))
+            reset_source(("OSM PBF", prepared.cache_key))
             st.session_state.terrain = prepared.terrain
             st.session_state.active_source_name = json.loads(prepared.metadata_json)["source_name"]
             st.session_state.active_requires_scale = True
@@ -320,8 +328,35 @@ def main() -> None:
         st.session_state.active_requires_scale = requires_scale
         st.session_state.active_osm_tiff = None
 
+    if terrain.development_source is not None:
+        terrain = clear_development_boundary(terrain)
+    with st.expander("Граница освоения (необязательно)"):
+        st.caption("Ограничивает только новые объекты. Существующие дороги снаружи остаются доступными для прохода. "
+                   "Для геопривязанной карты — GeoJSON WGS84; для локального TIFF — JSON в локальных метрах.")
+        boundary = st.file_uploader("Граница освоения", type=["geojson", "json"],
+                                    key="development_boundary", max_upload_size=8)
+    boundary_hash = None
+    if boundary is not None:
+        try:
+            terrain = apply_development_boundary(terrain, boundary.getvalue(), source_name=boundary.name)
+        except (ValueError, RasterioError) as error:
+            st.session_state.terrain = None
+            st.session_state.terrain_ready = False
+            st.error(f"Не удалось применить границу освоения: {error}")
+            st.stop()
+        boundary_hash = (boundary.name, sha256(boundary.getvalue()).hexdigest())
+    reset_project((st.session_state.base_input_identity, boundary_hash))
     st.session_state.terrain = terrain
     st.caption(f"Источник: {source_name}")
+    if terrain.development_source is not None:
+        restriction = json.loads(terrain.development_source.manifest_json)
+        percent = restriction["eligible_free_percent"]
+        share = f"{percent:.2f}%" if percent is not None else "нет свободной земли"
+        st.caption(f"Граница освоения — жёлтый контур. Источник: {restriction['source']}. "
+                   f"Пригодно {restriction['eligible_free_area_m2']:g} м² свободной земли ({share}). "
+                   "Ячейки, которых касается контур, исключены целиком.")
+        if restriction["eligible_free_area_m2"] == 0:
+            st.info("В границе освоения нет пригодных свободных ячеек: новые объекты не появятся, цель даст недобор.")
     if terrain.vector_source is not None:
         st.caption(f"SHA-256 GeoJSON: {terrain.input_sha256}. Исходные геометрии и роли сохраняются в ZIP. "
                    "Граница учитывается по центрам ячеек, точность контуров ограничена шагом сетки.")

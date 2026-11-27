@@ -1,14 +1,19 @@
 """Настоящий Chromium: геометрия кликов, изменение размера и работа без внешней сети."""
 import os
+from hashlib import sha256
+from io import BytesIO
+import json
 from pathlib import Path
 import socket
 import subprocess
 import sys
 from time import monotonic, sleep
 from urllib.request import ProxyHandler, build_opener
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
+from PIL import Image
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
@@ -159,7 +164,7 @@ def test_rectangular_raster_last_cell_and_offline_loading(browser_app,tmp_path,l
         data=memory.read()
     path=tmp_path/"rectangle.tif";path.write_bytes(data)
     page.get_by_text("Свой TIFF",exact=True).click()
-    page.locator('input[type="file"]').set_input_files(str(path))
+    page.get_by_test_id("stFileUploader").filter(has_text="Карта классов TIFF/GeoTIFF").locator('input[type="file"]').set_input_files(str(path))
     if local:
         page.get_by_text("Локальные координаты",exact=True).click()
         page.get_by_label("Шаг растра, м/пиксель",exact=True).fill("10")
@@ -168,3 +173,24 @@ def test_rectangular_raster_last_cell_and_offline_loading(browser_app,tmp_path,l
     page.locator('.viewer canvas[data-columns="64"][data-rows="32"]').wait_for()
     click_cell(page,31,63)
     assert "Строка 31, столбец 63" in page.locator(".position").inner_text()
+
+
+def test_development_boundary_contour_export_and_clear(browser_app):
+    from playwright.sync_api import expect
+    page,_=browser_app
+    page.get_by_text("Граница освоения (необязательно)",exact=True).click()
+    upload=page.get_by_test_id("stFileUploader").filter(has_text="Граница освоения").locator('input[type="file"]')
+    path=ROOT/"examples/development-boundary.geojson"
+    upload.set_input_files(str(path))
+    expect(page.get_by_text("Граница освоения — жёлтый контур.",exact=False)).to_be_visible()
+    image=Image.open(BytesIO(page.locator(".viewer canvas").screenshot())).convert("RGB")
+    assert np.any(np.all(np.asarray(image)==(250,204,21),axis=-1))
+    page.get_by_text("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255",exact=True).click()
+    page.get_by_role("button",name="Сгенерировать",exact=True).click()
+    page.get_by_role("button",name="Скачать ZIP текущего проекта",exact=True).wait_for()
+    with ZipFile(BytesIO(download_zip(page))) as archive:
+        metadata=json.loads(archive.read("metrics.json"))
+        assert metadata["development_area"]["source_sha256"]==sha256(path.read_bytes()).hexdigest()
+    page.get_by_role("button",name=f"Remove {path.name}",exact=True).click()
+    expect(page.get_by_text("Граница освоения — жёлтый контур.",exact=False)).to_have_count(0)
+    expect(page.get_by_role("button",name="Скачать ZIP текущего проекта",exact=True)).to_have_count(0)

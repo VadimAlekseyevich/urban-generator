@@ -33,18 +33,21 @@ def _fail(message: str) -> None:
     raise TerrainReadError(message)
 
 
-def _position(position) -> None:
+def _position(position, *, geographic=True) -> None:
     if (not isinstance(position, list) or len(position) != 2
             or any(isinstance(v, bool) or not isinstance(v, Real) or not isfinite(v) for v in position)
-            or not -180 < position[0] < 180 or not -80 <= position[1] <= 84):
-        _fail("Нужны двумерные координаты WGS84 [долгота, широта] в пределах UTM: (-180,180), [-80,84].")
+            or (geographic and (not -180 < position[0] < 180 or not -80 <= position[1] <= 84))):
+        _fail("Нужны двумерные координаты WGS84 [долгота, широта] в пределах UTM: (-180,180), [-80,84]."
+              if geographic else "Нужны конечные двумерные координаты локальной границы в метрах.")
+    if not geographic and any(abs(v) > 10_000_000 for v in position):
+        _fail("Координаты локальной границы должны быть в пределах ±10 миллионов метров.")
 
 
-def _line(line, *, ring=False) -> None:
+def _line(line, *, ring=False, geographic=True) -> None:
     if not isinstance(line, list) or len(line) < (4 if ring else 2):
         _fail("Пустая или неполная геометрия: линия требует 2 точки, кольцо — 4.")
     for position in line:
-        _position(position)
+        _position(position, geographic=geographic)
     if ring and line[0] != line[-1]:
         _fail("Кольца Polygon должны быть замкнуты: последняя точка совпадает с первой.")
     if any(a == b for a, b in zip(line, line[1:])):
@@ -70,7 +73,7 @@ def _inside(point, ring):
                 (point[1] - a[:, 1]) * (b[:, 0] - a[:, 0]) / (b[:, 1] - a[:, 1])) % 2)
 
 
-def _polygon(polygon) -> None:
+def _polygon(polygon, *, geographic=True) -> None:
     if not isinstance(polygon, list) or not polygon:
         _fail("Polygon должен содержать внешнее кольцо.")
     # Ограничиваем квадратичную проверку пересечений до растеризации.
@@ -78,7 +81,7 @@ def _polygon(polygon) -> None:
         _fail("В одном полигоне больше 2048 точек. Упростите геометрию в GIS.")
     rings = []
     for line in polygon:
-        _line(line, ring=True)
+        _line(line, ring=True, geographic=geographic)
         ring = np.asarray(line, dtype=float) - np.asarray(polygon[0][0], dtype=float)
         a, b = ring[:-1], ring[1:]
         area = np.sum(a[:, 0] * b[:, 1] - b[:, 0] * a[:, 1])
@@ -99,7 +102,7 @@ def _polygon(polygon) -> None:
         rings.append(ring)
 
 
-def _geometry(geometry, role) -> None:
+def _geometry(geometry, role, *, geographic=True) -> None:
     if not isinstance(geometry, dict) or geometry.get("type") not in ROLE_TYPES[role]:
         _fail(f"Роль {role}: нужны геометрии {', '.join(sorted(ROLE_TYPES[role]))}. Проверьте поле role.")
     coordinates = geometry.get("coordinates")
@@ -107,15 +110,15 @@ def _geometry(geometry, role) -> None:
         _fail("Геометрия пуста. Добавьте координаты объекта.")
     kind = geometry["type"]
     if kind == "LineString":
-        _line(coordinates)
+        _line(coordinates, geographic=geographic)
     elif kind == "MultiLineString":
         for line in coordinates:
-            _line(line)
+            _line(line, geographic=geographic)
     elif kind == "Polygon":
-        _polygon(coordinates)
+        _polygon(coordinates, geographic=geographic)
     else:
         for polygon in coordinates:
-            _polygon(polygon)
+            _polygon(polygon, geographic=geographic)
 
 
 def _parse(data: bytes) -> dict:

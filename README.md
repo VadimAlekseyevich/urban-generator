@@ -80,6 +80,10 @@ uv run --frozen --with osmium==4.3.2 streamlit run app.py
 в локальных метрах. `objects.csv` связывает геометрию, дома и школы по
 `object_id`. Улицы выгружаются как полигоны ячеек, дома — как пятна.
 
+Можно загрузить [отдельную границу освоения](docs/DEVELOPMENT_BOUNDARY.md):
+новые объекты появятся только внутри неё, существующие дороги снаружи
+сохранятся. Для демо есть `examples/development-boundary.geojson`.
+
 ```bash
 uv run pytest -q
 ```

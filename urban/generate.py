@@ -39,6 +39,8 @@ def calculate_suitability(terrain: Terrain) -> Suitability:
     """
     classes = terrain.classes
     free_mask = terrain.valid_mask & (classes == ClassCode.FREE)
+    if terrain.development_mask is not None:
+        free_mask &= terrain.development_mask
     roads = terrain.valid_mask & (classes == ClassCode.EXISTING_ROAD)
     road_distance_m = distance_transform_edt(~roads, sampling=terrain.pixel_size_m)
 
