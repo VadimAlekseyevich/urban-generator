@@ -1,6 +1,7 @@
 """Точка входа локального приложения Streamlit."""
 
 from hashlib import sha256
+import json
 from pathlib import Path
 from dataclasses import fields
 
@@ -10,6 +11,8 @@ from rasterio.errors import RasterioError
 from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
 from urban.vector_import import read_geojson
+from urban.osm_cache import prepare_pbf
+from urban.osm_import import make_window
 from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
 from urban.services import calculate_school_services
 from urban.report import (
@@ -140,16 +143,23 @@ def show_comparison(report: VerifiedReport) -> None:
     )
 
 
-def main() -> None:
-    st.set_page_config(page_title="Urban Generator", page_icon="🏙️", layout="wide")
-    st.title("Urban Generator")
-    st.write("Генерация городской застройки и оценка доступности школ.")
+def reset_project(input_identity) -> None:
+    if st.session_state.get("input_identity") != input_identity:
+        st.session_state.input_identity = input_identity
+        st.session_state.legend_confirmed = False
+        st.session_state.scale_confirmed = False
+        st.session_state.building_plan = None
+        st.session_state.school_allocation = None
+        st.session_state.verified_report = None
+        st.session_state.result_zip = None
+        st.session_state.variant_a = None
+        st.session_state.variant_a_zip = None
+        st.session_state.variant_b = None
+
+
+def read_file_source(source: str, demo_bytes: bytes):
     st.session_state.terrain = None
     st.session_state.terrain_ready = False
-
-    demo_bytes = DEMO_PATH.read_bytes()
-    source = st.radio("Источник территории", ["Демо-территория", "Свой TIFF", "GeoJSON"], horizontal=True)
-    st.download_button("Скачать демо GeoTIFF", demo_bytes, file_name="demo.tif", mime="image/tiff")
     if source == "Демо-территория":
         data = demo_bytes
         source_name = "demo.tif"
@@ -205,17 +215,7 @@ def main() -> None:
             st.caption("Локальное начало координат — левый нижний угол карты. Сброс удаляет исходную привязку.")
 
     input_identity = (source_identity, local, local_scale, discard, vector_scale)
-    if st.session_state.get("input_identity") != input_identity:
-        st.session_state.input_identity = input_identity
-        st.session_state.legend_confirmed = False
-        st.session_state.scale_confirmed = False
-        st.session_state.building_plan = None
-        st.session_state.school_allocation = None
-        st.session_state.verified_report = None
-        st.session_state.result_zip = None
-        st.session_state.variant_a = None
-        st.session_state.variant_a_zip = None
-        st.session_state.variant_b = None
+    reset_project(input_identity)
 
     if data is None:
         st.info("Загрузите GeoJSON FeatureCollection с ролями объектов, до 8 МиБ." if source == "GeoJSON"
@@ -232,11 +232,106 @@ def main() -> None:
         st.error(str(error))
         st.stop()
 
+    return terrain, source_name, local or source == "GeoJSON"
+
+
+def show_osm_source():
+    st.caption("PBF читается с диска на компьютере, где запущено приложение. "
+               "Скопируйте полный путь к файлу; загружать регион в браузер не требуется.")
+    with st.form("osm_input"):
+        path = st.text_input("Путь к локальному .osm.pbf", key="osm_path",
+                             placeholder=r"C:\Projects\data\city.osm.pbf")
+        left, right = st.columns(2)
+        lon = left.number_input("Долгота центра", min_value=-179.999, max_value=179.999,
+                                value=39.72, format="%.6f", key="osm_lon")
+        lat = right.number_input("Широта центра", min_value=-80.0, max_value=84.0,
+                                 value=54.62, format="%.6f", key="osm_lat")
+        size = left.number_input("Сторона окна, ячеек", min_value=1, max_value=256,
+                                 value=256, step=1, key="osm_size")
+        scale = right.number_input("Шаг окна, м", min_value=5.0, max_value=10.0,
+                                    value=10.0, step=0.5, key="osm_scale")
+        threads = left.number_input("Потоков чтения PBF", min_value=1, max_value=16,
+                                     value=2, step=1, key="osm_threads")
+        index = right.selectbox("Индекс координат узлов", ["flex_mem", "sparse_mem_array"],
+                                 key="osm_index")
+        st.caption("Региональный PBF сканируется целиком; индекс может занять несколько ГБ памяти. "
+                   "Число потоков не ограничивает память индекса. Стоп в меню Streamlit прервёт импорт "
+                   "при ближайшем обновлении стадии; на подготовке отношений обновления могут задерживаться.")
+        submitted = st.form_submit_button("Открыть участок OSM", key="open_osm")
+    if not submitted:
+        return None
+    if not path.strip():
+        st.error("Укажите полный путь к локальному файлу .osm.pbf.")
+        return None
+    try:
+        window = make_window(lon, lat, size, scale)
+        with st.status("Подготовка окна OSM…", expanded=True) as status:
+            activity = st.empty()
+            def progress(message):
+                activity.write(message)
+                status.update(label=message)
+            prepared = prepare_pbf(Path(path.strip().strip('"')), window,
+                                   index=index, threads=threads, progress=progress)
+            status.update(label="Готовое окно переиспользовано" if prepared.reused else "Окно OSM подготовлено",
+                          state="complete", expanded=False)
+        return prepared
+    except ImportError:
+        st.error("Для первого импорта нужен Pyosmium. Перезапустите приложение командой: "
+                 "uv run --frozen --with osmium==4.3.2 streamlit run app.py. "
+                 "Готовое окно из кэша можно открыть без Pyosmium.")
+    except FileNotFoundError:
+        st.error("Файл PBF не найден. Проверьте полный путь на компьютере, где запущено приложение.")
+    except KeyboardInterrupt:
+        st.warning("Импорт прерван. Предыдущая успешная территория и её результаты сохранены.")
+    except (ValueError, OSError, RuntimeError, RasterioError) as error:
+        st.error(f"Не удалось импортировать участок OSM: {error}")
+    return None
+
+
+def main() -> None:
+    st.set_page_config(page_title="Urban Generator", page_icon="🏙️", layout="wide")
+    st.title("Urban Generator")
+    st.write("Генерация городской застройки и оценка доступности школ.")
+    demo_bytes = DEMO_PATH.read_bytes()
+    source = st.radio("Источник территории", ["Демо-территория", "Свой TIFF", "GeoJSON", "OSM PBF"], horizontal=True)
+    st.download_button("Скачать демо GeoTIFF", demo_bytes, file_name="demo.tif", mime="image/tiff")
+    if source == "OSM PBF":
+        prepared = show_osm_source()
+        if prepared is not None:
+            reset_project(("OSM PBF", prepared.cache_key))
+            st.session_state.terrain = prepared.terrain
+            st.session_state.active_source_name = json.loads(prepared.metadata_json)["source_name"]
+            st.session_state.active_requires_scale = True
+            st.session_state.active_osm_tiff = prepared.data
+        terrain = st.session_state.get("terrain")
+        if terrain is None:
+            st.info("Выберите локальный PBF и нажмите «Открыть участок OSM».")
+            st.stop()
+        source_name = st.session_state.active_source_name
+        requires_scale = st.session_state.active_requires_scale
+        st.caption("Ниже открыта текущая успешная территория. Поля PBF применяются только кнопкой «Открыть участок OSM».")
+    else:
+        terrain, source_name, requires_scale = read_file_source(source, demo_bytes)
+        st.session_state.active_source_name = source_name
+        st.session_state.active_requires_scale = requires_scale
+        st.session_state.active_osm_tiff = None
+
     st.session_state.terrain = terrain
     st.caption(f"Источник: {source_name}")
     if terrain.vector_source is not None:
         st.caption(f"SHA-256 GeoJSON: {terrain.input_sha256}. Исходные геометрии и роли сохраняются в ZIP. "
                    "Граница учитывается по центрам ячеек, точность контуров ограничена шагом сетки.")
+    if terrain.osm_import_json is not None:
+        metadata = json.loads(terrain.osm_import_json)
+        st.caption(metadata.get("attribution", ""))
+        st.caption(f"Источник PBF: {metadata.get('source_name')} · SHA-256: {metadata.get('source_sha256')} · "
+                   f"Классификатор: {metadata.get('import_version')}. "
+                   f"Охват WGS84: {metadata.get('bounds_wgs84')}.")
+        st.info("Код 0 — неизвестные или незанятые по OSM ячейки; доступность строительства нужно проверить.")
+        if st.session_state.get("active_osm_tiff") is not None:
+            st.download_button("Скачать подготовленный GeoTIFF", st.session_state.active_osm_tiff,
+                               file_name="osm-window.tif", mime="image/tiff", key="download_osm_tiff",
+                               on_click="ignore")
     if terrain.coordinate_mode == CoordinateMode.GEOREFERENCED:
         st.write(f"CRS: {terrain.crs.to_string()}")
     else:
@@ -257,7 +352,7 @@ def main() -> None:
         "Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255", key="legend_confirmed",
     )
     scale_confirmed = True
-    if local or source == "GeoJSON":
+    if requires_scale:
         scale_confirmed = st.checkbox(
             f"Подтверждаю масштаб {terrain.pixel_size_m:g} м/пиксель", key="scale_confirmed",
         )
@@ -265,7 +360,7 @@ def main() -> None:
     if st.session_state.terrain_ready:
         st.success("Легенда и масштаб подтверждены.")
     else:
-        st.info("Проверьте карту и подтвердите легенду; для локального TIFF и GeoJSON подтвердите также масштаб.")
+        st.info("Проверьте карту и подтвердите легенду; для локального TIFF, GeoJSON и PBF подтвердите также масштаб.")
 
     defaults = Scenario()
     specifications = {parameter.name: parameter for parameter in fields(Scenario)}

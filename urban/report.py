@@ -388,7 +388,8 @@ def _export_metadata(report: VerifiedReport) -> dict:
         "algorithm_version": ALGORITHM_VERSION,
         "input_sha256": terrain.input_sha256,
         "source": (json.loads(terrain.vector_source.manifest_json)
-                   if terrain.vector_source is not None else None),
+                   if terrain.vector_source is not None else
+                   json.loads(terrain.osm_import_json) if terrain.osm_import_json is not None else None),
         "coordinate_mode": terrain.coordinate_mode.value,
         "pixel_size_m": terrain.pixel_size_m,
         "width": int(report.classes.shape[1]),
@@ -470,6 +471,9 @@ def _export_tiff(report: VerifiedReport) -> bytes:
                     coordinate_mode=terrain.coordinate_mode.value,
                     legend=json.dumps(_export_metadata(report)["legend"], ensure_ascii=False),
                 )
+                if terrain.osm_import_json is not None:
+                    dataset.update_tags(OSM_IMPORT=terrain.osm_import_json,
+                                        ATTRIBUTION=json.loads(terrain.osm_import_json).get("attribution", ""))
             return memory.read()
 
 

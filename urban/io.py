@@ -1,6 +1,7 @@
 """Чтение одной тематической карты TIFF из байтов, без файлов на диске."""
 
 from hashlib import sha256
+import json
 from math import floor, isfinite
 import warnings
 
@@ -114,11 +115,21 @@ def read_terrain(
                     raise TerrainReadError(
                         "Нет исходной дороги внутри маски. Добавьте дорожные ячейки с кодом 2."
                     )
+                osm_import_json = dataset.tags().get("OSM_IMPORT")
+                if osm_import_json is not None:
+                    try:
+                        metadata = json.loads(osm_import_json)
+                        if not isinstance(metadata, dict):
+                            raise ValueError("Нужен объект JSON")
+                        osm_import_json = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
+                    except (ValueError, TypeError, RecursionError) as error:
+                        raise TerrainReadError("Повреждены метаданные OSM_IMPORT. Повторите импорт исходного PBF.") from error
                 return Terrain(
                     classes=classes, valid_mask=valid_mask, pixel_size_m=h,
                     coordinate_mode=mode, input_sha256=sha256(data).hexdigest(),
                     crs=dataset.crs if mode == CoordinateMode.GEOREFERENCED else None,
                     transform=dataset.transform if mode == CoordinateMode.GEOREFERENCED else None,
+                    osm_import_json=osm_import_json,
                 )
     except TerrainReadError:
         raise
