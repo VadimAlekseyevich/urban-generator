@@ -63,8 +63,15 @@ runpy.run_path({str(ROOT / 'app.py')!r}, run_name='__main__')
                 context.route("**/*",lambda route: route.continue_() if route.request.url.startswith(f"http://127.0.0.1:{port}/") else route.abort())
                 page = context.new_page()
                 page.goto(f"http://127.0.0.1:{port}")
-                yield page, count
-                browser.close()
+                try:
+                    yield page, count
+                finally:
+                    artifact=Path(os.environ.get("URBAN_BROWSER_ARTIFACTS","/tmp/urban-browser"))
+                    artifact.mkdir(parents=True,exist_ok=True)
+                    page.screenshot(path=str(artifact/(tmp_path.name+".png")),full_page=True)
+                    (artifact/(tmp_path.name+".txt")).write_text(page.locator("body").inner_text())
+                    (artifact/(tmp_path.name+"-server.log")).write_text((tmp_path/"server.log").read_text())
+                    browser.close()
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -85,7 +92,7 @@ def download_zip(page):
 
 def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
     page,count=browser_app
-    page.get_by_label("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255").check()
+    page.get_by_text("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255",exact=True).click()
     page.get_by_role("button",name="Сгенерировать",exact=True).click()
     page.get_by_role("button",name="Скачать ZIP текущего проекта",exact=True).wait_for()
     original_zip=download_zip(page)
@@ -114,7 +121,7 @@ def test_selection_zoom_resize_layers_and_zip_are_stable(browser_app):
     click_cell(page,20,20);click_cell(page,20,30)
     assert "100.0 м" in page.locator(".position").inner_text()
     page.get_by_role("button",name="Линейка",exact=True).click()
-    page.get_by_label("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255").uncheck()
+    page.get_by_text("Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255",exact=True).click()
     page.get_by_text(f"Дом №{house.id}",exact=True).wait_for()
     assert download_zip(page)==original_zip
     assert count.read_text().splitlines()==["generation"]
@@ -141,7 +148,7 @@ def test_rectangular_raster_last_cell_and_offline_loading(browser_app,tmp_path,l
         page.get_by_text("Локальные координаты",exact=True).click()
         page.get_by_label("Шаг растра, м/пиксель",exact=True).fill("10")
         page.get_by_label("Шаг растра, м/пиксель",exact=True).press("Enter")
-        page.get_by_label("Сбросить геопривязку файла",exact=True).check()
+        page.get_by_text("Сбросить геопривязку файла",exact=True).click()
     page.locator('.viewer canvas[data-columns="64"][data-rows="32"]').wait_for()
     click_cell(page,31,63)
     assert "Строка 31, столбец 63" in page.locator(".position").inner_text()
