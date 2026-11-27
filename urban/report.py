@@ -22,6 +22,7 @@ from urban.model import (
     ROAD_PROXIMITY_WEIGHT, BuildingPlan, ClassCode, CoordinateMode, RoadNetwork, Terrain,
 )
 from urban.services import SchoolAllocation
+from urban.spatial_export import export_spatial
 
 
 # Подписи и цвета общие для карты и легенды интерфейса.
@@ -371,11 +372,11 @@ def validate_result(
 
 
 # Версии формата и алгоритма, а не пакета Python (см. §3 и §5 DESIGN.md).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ALGORITHM_VERSION = 1
 BUILDINGS_CSV_FIELDS = (
     "id", "row", "column", "footprint_area_m2", "floors", "population",
-    "school_demand", "school_served",
+    "school_demand", "school_served", "object_id",
 )
 
 
@@ -421,7 +422,7 @@ def _export_metadata(report: VerifiedReport) -> dict:
             "no_capacity_places": report.metrics.no_capacity_places,
         },
         "schools": [{
-            "id": s.id, "row": s.site.coordinate[0], "column": s.site.coordinate[1],
+            "id": s.id, "object_id": f"school-{s.id}", "row": s.site.coordinate[0], "column": s.site.coordinate[1],
             "capacity": s.capacity, "served": s.served,
             "utilization_percent": 100 * s.served / s.capacity,
             "max_assigned_distance_m": s.max_assigned_distance_m,
@@ -436,7 +437,7 @@ def _export_buildings_csv(report: VerifiedReport) -> bytes:
     services = {b.building_id: b for b in report.allocation.buildings}
     for b in sorted(report.plan.buildings, key=lambda b: b.id):
         writer.writerow({
-            "id": b.id, "row": b.row, "column": b.column,
+            "id": b.id, "object_id": f"house-{b.id}", "row": b.row, "column": b.column,
             "footprint_area_m2": b.footprint_area_m2, "floors": b.floors,
             "population": b.population, "school_demand": b.school_demand,
             "school_served": services[b.id].served,
@@ -485,12 +486,16 @@ def export_result_zip(report: VerifiedReport) -> bytes:
     """
     checked = validate_result(report.plan, report.allocation, report.classes)
     _require(report.metrics == checked.metrics, "Метрики отчёта не соответствуют результату")
-    metadata = json.dumps(_export_metadata(checked), ensure_ascii=False, indent=2,
+    description = _export_metadata(checked)
+    spatial_members, descriptor = export_spatial(checked, description)
+    description["spatial_export"] = descriptor
+    metadata = json.dumps(description, ensure_ascii=False, indent=2,
                           allow_nan=False).encode("utf-8") + b"\n"
     members = {
         "result.tif": _export_tiff(checked),
         "metrics.json": metadata,
         "buildings.csv": _export_buildings_csv(checked),
+        **spatial_members,
     }
     if checked.plan.terrain.vector_source is not None:
         members["source.geojson"] = checked.plan.terrain.vector_source.data

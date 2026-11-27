@@ -111,7 +111,7 @@ def test_readme_demo_and_export(tmp_path, monkeypatch):
     for name, report in (("result_A.zip", a), ("result.zip", b)):
         with ZipFile(tmp_path / name) as z:
             assert z.testzip() is None
-            assert set(z.namelist()) == {"result.tif", "metrics.json", "buildings.csv"}
+            assert set(z.namelist()) == {"result.tif", "metrics.json", "buildings.csv", "objects.csv", "project.geojson"}
             meta = json.loads(z.read("metrics.json"))
             assert meta["input_sha256"] == sha256(demo).hexdigest()
             assert meta["parameters"]["school_budget"] == report.plan.scenario.school_budget
