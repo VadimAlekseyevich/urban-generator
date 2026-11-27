@@ -51,6 +51,15 @@ class CoordinateMode(StrEnum):
     GEOREFERENCED = "georeferenced"
 
 
+@dataclass(frozen=True, slots=True)
+class VectorSource:
+    """Неизменяемый оригинал GeoJSON и JSON-манифест его объектов."""
+
+    name: str
+    data: bytes
+    manifest_json: str
+
+
 def validate_pixel_size_m(value: float) -> float:
     """Проверка масштаба, общая для заголовка файла и модели."""
     if (
@@ -131,6 +140,8 @@ class Terrain:
     В локальном режиме CRS отсутствует, transform строится от левого нижнего
     угла (0, 0). Геопривязанный режим сохраняет исходные CRS и transform.
     Чтение TIFF и проверка его заголовка выполняются загрузчиком.
+    Для векторного входа vector_source сохраняет оригинальные байты,
+    манифест ID/ролей/источников; input_sha256 относится к GeoJSON.
     """
 
     classes: NDArray[np.uint8]
@@ -140,6 +151,7 @@ class Terrain:
     input_sha256: str
     crs: CRS | None = None
     transform: Affine | None = None
+    vector_source: VectorSource | None = None
 
     def __post_init__(self) -> None:
         classes = np.asarray(self.classes)

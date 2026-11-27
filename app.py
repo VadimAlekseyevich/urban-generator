@@ -9,6 +9,7 @@ from rasterio.errors import RasterioError
 
 from urban.generate import generate_buildings
 from urban.io import TerrainReadError, read_terrain
+from urban.vector_import import read_geojson
 from urban.model import CoordinateMode, MAX_INPUT_BYTES, PIXEL_SIZE_M_RANGE, Scenario
 from urban.services import calculate_school_services
 from urban.report import (
@@ -19,6 +20,7 @@ from urban.report import (
 
 
 DEMO_PATH = Path(__file__).resolve().parent / "examples" / "demo.tif"
+GEOJSON_PATH = DEMO_PATH.with_name("site.geojson")
 
 
 def show_legend(legend: dict) -> None:
@@ -146,29 +148,48 @@ def main() -> None:
     st.session_state.terrain_ready = False
 
     demo_bytes = DEMO_PATH.read_bytes()
-    source = st.radio("Источник территории", ["Демо-территория", "Свой TIFF"], horizontal=True)
+    source = st.radio("Источник территории", ["Демо-территория", "Свой TIFF", "GeoJSON"], horizontal=True)
     st.download_button("Скачать демо GeoTIFF", demo_bytes, file_name="demo.tif", mime="image/tiff")
     if source == "Демо-территория":
         data = demo_bytes
         source_name = "demo.tif"
-    else:
+    elif source == "Свой TIFF":
         uploaded = st.file_uploader(
             "Карта классов TIFF/GeoTIFF", type=["tif", "tiff"],
             max_upload_size=MAX_INPUT_BYTES // (1024 * 1024),
         )
         data = uploaded.getvalue() if uploaded is not None else None
         source_name = uploaded.name if uploaded is not None else ""
+    else:
+        st.download_button("Скачать пример GeoJSON", GEOJSON_PATH.read_bytes(),
+                           file_name="site.geojson", mime="application/geo+json")
+        st.caption("WGS84 [долгота, широта]. properties.role: boundary — граница, road — ось дороги, "
+                   "building — существующее здание, exclusion — запрет. Одна граница Polygon/MultiPolygon, "
+                   "дороги LineString/MultiLineString, здания и запреты Polygon/MultiPolygon.")
+        uploaded = st.file_uploader(
+            "Участок GeoJSON", type=["geojson", "json"],
+            max_upload_size=MAX_INPUT_BYTES // (1024 * 1024),
+        )
+        data = uploaded.getvalue() if uploaded is not None else None
+        source_name = uploaded.name if uploaded is not None else ""
 
-    source_identity = (source, sha256(data).hexdigest() if data is not None else None)
+    source_identity = (source, source_name, sha256(data).hexdigest() if data is not None else None)
     if st.session_state.get("source_identity") != source_identity:
         st.session_state.source_identity = source_identity
         # Выбор локального режима и сброса привязки относится к конкретному файлу.
-        for key in ("coordinate_selection", "local_scale", "discard_georeferencing"):
+        for key in ("coordinate_selection", "local_scale", "discard_georeferencing", "vector_scale"):
             st.session_state.pop(key, None)
 
     local = False
     local_scale = None
     discard = False
+    vector_scale = None
+    if source == "GeoJSON":
+        vector_scale = st.number_input(
+            "Шаг расчётной сетки, м", min_value=PIXEL_SIZE_M_RANGE[0],
+            max_value=PIXEL_SIZE_M_RANGE[1], value=10.0, step=0.5, key="vector_scale",
+            help="Местная UTM выбирается автоматически. Предел — 256×256 ячеек; проверьте охват на предпросмотре.",
+        )
     if source == "Свой TIFF" and data is not None:
         mode = st.radio(
             "Режим координат", ["Геопривязка GeoTIFF", "Локальные координаты"],
@@ -183,7 +204,7 @@ def main() -> None:
             discard = st.checkbox("Сбросить геопривязку файла", key="discard_georeferencing")
             st.caption("Локальное начало координат — левый нижний угол карты. Сброс удаляет исходную привязку.")
 
-    input_identity = (source_identity, local, local_scale, discard)
+    input_identity = (source_identity, local, local_scale, discard, vector_scale)
     if st.session_state.get("input_identity") != input_identity:
         st.session_state.input_identity = input_identity
         st.session_state.legend_confirmed = False
@@ -197,20 +218,25 @@ def main() -> None:
         st.session_state.variant_b = None
 
     if data is None:
-        st.info("Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
+        st.info("Загрузите GeoJSON FeatureCollection с ролями объектов, до 8 МиБ." if source == "GeoJSON"
+                else "Загрузите один TIFF с кодами классов 0–3 и NoData=255, до 256×256 ячеек и 8 МиБ.")
         st.stop()
     if local and local_scale is None:
         st.info("Укажите масштаб от 5 до 10 м/пиксель для локальной карты.")
         st.stop()
 
     try:
-        terrain = read_terrain(data, local_scale=local_scale, discard_georeferencing=discard)
+        terrain = (read_geojson(data, vector_scale, source_name=source_name) if source == "GeoJSON" else
+                   read_terrain(data, local_scale=local_scale, discard_georeferencing=discard))
     except TerrainReadError as error:
         st.error(str(error))
         st.stop()
 
     st.session_state.terrain = terrain
     st.caption(f"Источник: {source_name}")
+    if terrain.vector_source is not None:
+        st.caption(f"SHA-256 GeoJSON: {terrain.input_sha256}. Исходные геометрии и роли сохраняются в ZIP. "
+                   "Граница учитывается по центрам ячеек, точность контуров ограничена шагом сетки.")
     if terrain.coordinate_mode == CoordinateMode.GEOREFERENCED:
         st.write(f"CRS: {terrain.crs.to_string()}")
     else:
@@ -231,7 +257,7 @@ def main() -> None:
         "Подтверждаю: карта соответствует легенде классов 0–3 и NoData=255", key="legend_confirmed",
     )
     scale_confirmed = True
-    if local:
+    if local or source == "GeoJSON":
         scale_confirmed = st.checkbox(
             f"Подтверждаю масштаб {terrain.pixel_size_m:g} м/пиксель", key="scale_confirmed",
         )
@@ -239,7 +265,7 @@ def main() -> None:
     if st.session_state.terrain_ready:
         st.success("Легенда и масштаб подтверждены.")
     else:
-        st.info("Проверьте карту и подтвердите легенду; в локальном режиме подтвердите также масштаб.")
+        st.info("Проверьте карту и подтвердите легенду; для локального TIFF и GeoJSON подтвердите также масштаб.")
 
     defaults = Scenario()
     specifications = {parameter.name: parameter for parameter in fields(Scenario)}

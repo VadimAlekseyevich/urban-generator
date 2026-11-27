@@ -8,18 +8,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from math import floor, isfinite
 from pathlib import Path
 from time import monotonic
 
 import numpy as np
 from rasterio.crs import CRS
-from rasterio.features import bounds, rasterize
+from rasterio.features import bounds
 from rasterio.io import MemoryFile
 from rasterio.transform import array_bounds, from_origin
 from rasterio.warp import transform, transform_bounds, transform_geom
 
-from urban.io import read_terrain
+from urban.io import local_metric_crs, rasterize_classes, read_terrain
 from urban.model import ClassCode, MAX_RASTER_SIDE, validate_pixel_size_m
 
 
@@ -69,20 +68,10 @@ class Window:
 
 def make_window(lon: float, lat: float, size: int = 256, pixel_size_m: float = 10) -> Window:
     """Квадрат в местной UTM с заданным географическим центром."""
-    if not (isfinite(lon) and isfinite(lat) and -180 < lon < 180 and -80 <= lat <= 84):
-        raise ValueError("Центр должен быть в пределах UTM: долгота (-180,180), широта [-80,84].")
+    crs = local_metric_crs(lon, lat)
     if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= MAX_RASTER_SIDE:
         raise ValueError("Размер карты должен быть целым от 1 до 256.")
     h = validate_pixel_size_m(pixel_size_m)
-    zone = min(60, floor((lon + 180) / 6) + 1)
-    # Специальные зоны UTM для Норвегии и Шпицбергена.
-    if 56 <= lat < 64 and 3 <= lon < 12:
-        zone = 32
-    if 72 <= lat < 84:
-        for west, east, special in ((0, 9, 31), (9, 21, 33), (21, 33, 35), (33, 42, 37)):
-            if west <= lon < east:
-                zone = special
-    crs = CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
     xs, ys = transform("EPSG:4326", crs, [lon], [lat])
     half = size * h / 2
     affine = from_origin(xs[0] - half, ys[0] + half, h, h)
@@ -126,15 +115,7 @@ def _overlaps(a, b) -> bool:
 
 
 def _rasterize(shapes: dict, window: Window) -> np.ndarray:
-    # Приоритет: здания > известные запреты > дороги > неизвестное пространство.
-    # all_touched сохраняет даже узкие объекты в пределах грубой сетки.
-    classes = np.zeros((window.size, window.size), dtype=np.uint8)
-    for code in (ClassCode.EXISTING_ROAD, ClassCode.BLOCKED, ClassCode.EXISTING_BUILDING):
-        if shapes[code]:
-            mask = rasterize(shapes[code], out_shape=classes.shape, transform=window.transform,
-                             fill=0, default_value=1, all_touched=True, dtype="uint8")
-            classes[mask != 0] = code
-    return classes
+    return rasterize_classes(shapes, (window.size, window.size), window.transform)
 
 
 def _hash_file(path: Path, progress: Progress = _silent) -> str:

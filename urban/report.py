@@ -387,6 +387,8 @@ def _export_metadata(report: VerifiedReport) -> dict:
         "schema_version": SCHEMA_VERSION,
         "algorithm_version": ALGORITHM_VERSION,
         "input_sha256": terrain.input_sha256,
+        "source": (json.loads(terrain.vector_source.manifest_json)
+                   if terrain.vector_source is not None else None),
         "coordinate_mode": terrain.coordinate_mode.value,
         "pixel_size_m": terrain.pixel_size_m,
         "width": int(report.classes.shape[1]),
@@ -486,6 +488,8 @@ def export_result_zip(report: VerifiedReport) -> bytes:
         "metrics.json": metadata,
         "buildings.csv": _export_buildings_csv(checked),
     }
+    if checked.plan.terrain.vector_source is not None:
+        members["source.geojson"] = checked.plan.terrain.vector_source.data
     output = BytesIO()
     with ZipFile(output, "w") as archive:
         for name, data in members.items():
