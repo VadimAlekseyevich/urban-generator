@@ -33,7 +33,8 @@ def demo():
 
 def unpack(report):
     with ZipFile(BytesIO(export_result_zip(report))) as archive:
-        assert set(archive.namelist()) == {"result.tif", "metrics.json", "buildings.csv"}
+        assert set(archive.namelist()) == {"result.tif", "metrics.json", "buildings.csv", "objects.csv",
+                                            "project.geojson" if report.plan.terrain.crs is not None else "project-local-wkt.csv"}
         assert archive.testzip() is None
         return (
             archive.read("result.tif"),
@@ -70,7 +71,8 @@ def test_tiff_roundtrip_and_metadata(demo, local):
     assert metadata["pixel_size_m"] == terrain.pixel_size_m
     assert metadata["input_sha256"] == terrain.input_sha256
     assert metadata["seed"] == metadata["parameters"]["seed"] == 42
-    assert metadata["schema_version"] == metadata["algorithm_version"] == 1
+    assert metadata["schema_version"] == 2
+    assert metadata["algorithm_version"] == 1
     assert metadata["metric_units"] == METRIC_UNITS
     assert set(metadata["legend"]) == {"0", "1", "2", "3", "4", "5", "6", "255"}
     if local:

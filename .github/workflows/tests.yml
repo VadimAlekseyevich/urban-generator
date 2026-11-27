@@ -33,6 +33,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --frozen
+      - name: Install independent GIS reader
+        run: sudo apt-get update && sudo apt-get install -y gdal-bin
       - run: uv run --frozen pytest -q
       - run: uv run --frozen python -m examples.run_experiment --output-dir "$RUNNER_TEMP/urban-experiment"
       - run: uv run --frozen python -m examples.run_benchmark --output-dir "$RUNNER_TEMP/urban-benchmark"

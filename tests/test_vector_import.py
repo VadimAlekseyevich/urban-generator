@@ -72,7 +72,7 @@ def test_original_geometries_ids_sources_and_hash_survive_deterministic_export()
     output = export_result_zip(completed)
     assert output == export_result_zip(report(read_geojson(SOURCE, 10, source_name="my-site.geojson")))
     with ZipFile(BytesIO(output)) as archive:
-        assert set(archive.namelist()) == {"result.tif", "metrics.json", "buildings.csv", "source.geojson"}
+        assert set(archive.namelist()) == {"result.tif", "metrics.json", "buildings.csv", "source.geojson", "objects.csv", "project.geojson"}
         assert archive.read("source.geojson") == SOURCE
         metadata = json.loads(archive.read("metrics.json"))
         source = metadata["source"]

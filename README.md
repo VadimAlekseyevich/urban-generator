@@ -75,6 +75,11 @@ uv run --frozen --with osmium==4.3.2 streamlit run app.py
 
 ## Проверка
 
+В ZIP доступны [пространственные объекты для GIS](docs/GIS_EXPORT.md):
+`project.geojson` в WGS84 для геопривязанного входа или `project-local-wkt.csv`
+в локальных метрах. `objects.csv` связывает геометрию, дома и школы по
+`object_id`. Улицы выгружаются как полигоны ячеек, дома — как пятна.
+
 ```bash
 uv run pytest -q
 ```
