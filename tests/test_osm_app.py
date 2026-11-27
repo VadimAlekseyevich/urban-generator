@@ -30,7 +30,7 @@ def generate(app):
 
 def osm_form(app, path):
     app.radio[0].set_value("OSM PBF").run()
-    assert not app.file_uploader  # регион остаётся на диске
+    assert all(u.key == "development_boundary" for u in app.file_uploader)  # PBF остаётся на диске
     app.text_input(key="osm_path").set_value(str(path))
     app.number_input(key="osm_size").set_value(64)
     return app

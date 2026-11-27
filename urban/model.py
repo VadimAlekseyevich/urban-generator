@@ -155,6 +155,8 @@ class Terrain:
     transform: Affine | None = None
     vector_source: VectorSource | None = None
     osm_import_json: str | None = None
+    development_mask: NDArray[np.bool_] | None = None
+    development_source: VectorSource | None = None
 
     def __post_init__(self) -> None:
         classes = np.asarray(self.classes)
@@ -198,6 +200,17 @@ class Terrain:
         mask.setflags(write=False)
         object.__setattr__(self, "classes", normalized)
         object.__setattr__(self, "valid_mask", mask)
+        if self.development_mask is not None:
+            allowed = np.asarray(self.development_mask)
+            if allowed.shape != classes.shape or allowed.dtype != np.bool_:
+                raise ValueError("Маска освоения должна быть булевой и совпадать с сеткой")
+            if not isinstance(self.development_source, VectorSource):
+                raise ValueError("Укажите происхождение границы освоения")
+            allowed = allowed & mask
+            allowed.setflags(write=False)
+            object.__setattr__(self, "development_mask", allowed)
+        elif self.development_source is not None:
+            raise ValueError("Источник границы требует маску освоения")
 
     @property
     def cell_area_m2(self) -> float:

@@ -236,11 +236,16 @@ def validate_result(
     h = plan.terrain.pixel_size_m
     area = plan.terrain.cell_area_m2
     free = source == ClassCode.FREE
+    if plan.terrain.development_mask is not None:
+        free &= plan.terrain.development_mask
     original_roads = source == ClassCode.EXISTING_ROAD
     new_roads = plan.roads.new_roads
     ids = plan.building_ids
     _require(new_roads.shape == shape and new_roads.dtype == np.bool_, "Некорректный слой новых дорог")
     _require(ids.shape == shape and np.issubdtype(ids.dtype, np.integer), "Некорректный слой ID домов")
+    if plan.terrain.development_mask is not None:
+        _require(not np.any((new_roads | (ids != 0)) & ~plan.terrain.development_mask),
+                 "Новые объекты вне границы освоения")
     if classes is not None:
         _require(classes.shape == shape and np.issubdtype(classes.dtype, np.integer), "Некорректный итоговый растр")
         _require(np.array_equal(classes[~free], source[~free]), "Изменены исходные запрещённые ячейки")
@@ -354,7 +359,7 @@ def validate_result(
     road_count = int(new_roads.sum())
     house_cells = int(np.count_nonzero(ids))
     developed = road_count + house_cells + len(school_cells)
-    free_count = int(free.sum())
+    free_count = int(np.count_nonzero(source == ClassCode.FREE))
     delta = population - scenario.target_population
     metrics = ResultMetrics(
         violations_m2=0.0, disconnected_road_cells=disconnected,
@@ -388,6 +393,8 @@ def _export_metadata(report: VerifiedReport) -> dict:
         "schema_version": SCHEMA_VERSION,
         "algorithm_version": ALGORITHM_VERSION,
         "input_sha256": terrain.input_sha256,
+        "development_area": (json.loads(terrain.development_source.manifest_json)
+                             if terrain.development_source is not None else None),
         "source": (json.loads(terrain.vector_source.manifest_json)
                    if terrain.vector_source is not None else
                    json.loads(terrain.osm_import_json) if terrain.osm_import_json is not None else None),
@@ -499,6 +506,8 @@ def export_result_zip(report: VerifiedReport) -> bytes:
     }
     if checked.plan.terrain.vector_source is not None:
         members["source.geojson"] = checked.plan.terrain.vector_source.data
+    if checked.plan.terrain.development_source is not None:
+        members["development-boundary.json"] = checked.plan.terrain.development_source.data
     output = BytesIO()
     with ZipFile(output, "w") as archive:
         for name, data in members.items():

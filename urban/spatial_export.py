@@ -92,6 +92,7 @@ def export_spatial(report, metadata):
                       "urban_generator": {"schema_version": metadata["schema_version"],
                                           "input_sha256": terrain.input_sha256, "source": metadata["source"],
                                           "metrics": metadata["metrics"], "parameters": metadata["parameters"],
+                                          "development_area": metadata.get("development_area"),
                                           "spatial_export": descriptor}}
         members["project.geojson"] = (json.dumps(collection, ensure_ascii=False, allow_nan=False)+"\n").encode("utf-8")
     else:
