@@ -601,7 +601,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=11.0" },
     { name = "rasterio", specifier = ">=1.4" },
     { name = "scipy", specifier = ">=1.14" },
-    { name = "streamlit", specifier = ">=1.40" },
+    { name = "streamlit", specifier = ">=1.67" },
 ]
 
 [package.metadata.requires-dev]

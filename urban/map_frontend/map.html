@@ -1,0 +1,14 @@
+<section class="viewer" aria-label="Карта территории">
+  <div class="toolbar">
+    <button data-action="zoom-in" aria-label="Увеличить карту">+</button>
+    <button data-action="zoom-out" aria-label="Уменьшить карту">−</button>
+    <button data-action="fit">Общий вид</button>
+    <button data-action="mode">Исходник</button>
+    <button data-action="ruler" aria-pressed="false">Линейка</button>
+    <span class="zoom"></span>
+  </div>
+  <div class="layers" aria-label="Слои карты"></div>
+  <div class="stage"><canvas tabindex="0" aria-label="Интерактивная карта: колесо — масштаб, перетаскивание — перемещение"></canvas></div>
+  <div class="position" aria-live="polite">Колесо — масштаб · Перетаскивание — перемещение · Щелчок — выбор объекта</div>
+  <div class="object-card" aria-live="polite"><strong class="object-title">Выберите дом или школу на карте</strong><p class="object-details"></p></div>
+</section>

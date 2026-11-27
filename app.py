@@ -1,5 +1,6 @@
 """Точка входа локального приложения Streamlit."""
 
+from uuid import uuid4
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import streamlit as st
 from rasterio.errors import RasterioError
 
 from urban.generate import generate_buildings
+from urban.map_ui import show_map
 from urban.io import TerrainReadError, read_terrain
 from urban.vector_import import read_geojson
 from urban.osm_cache import prepare_pbf
@@ -146,6 +148,8 @@ def show_comparison(report: VerifiedReport) -> None:
 def reset_project(input_identity) -> None:
     if st.session_state.get("input_identity") != input_identity:
         st.session_state.input_identity = input_identity
+        st.session_state.viewer_token = uuid4().hex
+        st.session_state.map_selection = None
         st.session_state.legend_confirmed = False
         st.session_state.scale_confirmed = False
         st.session_state.building_plan = None
@@ -422,6 +426,8 @@ def main() -> None:
         except (ValueError, RasterioError, OSError):
             st.error("Не удалось сгенерировать проект. Проверьте параметры и повторите расчёт.")
         else:
+            st.session_state.viewer_token = uuid4().hex
+            st.session_state.map_selection = None
             st.session_state.building_plan = plan
             st.session_state.school_allocation = allocation
             st.session_state.verified_report = report
@@ -433,24 +439,9 @@ def main() -> None:
     plan = report.plan if report is not None else None
     allocation = report.allocation if report is not None else None
     with map_container:
-        left, right = st.columns(2)
-        with left:
-            st.subheader("Исходная территория")
-            st.image(
-                terrain_image(terrain), alt="Карта классов исходной территории",
-                width="stretch", output_format="PNG",
-            )
-        with right:
-            if plan is None:
-                show_legend(INPUT_LEGEND)
-            else:
-                st.subheader("Проект")
-                st.image(
-                    school_project_image(plan, allocation),
-                    alt="Проект с новыми улицами, домами и школами", width="stretch", output_format="PNG",
-                )
-        if plan is not None:
-            show_legend(SCHOOL_LEGEND)
+        st.subheader("Карта территории")
+        show_map(terrain, report, st.session_state.viewer_token)
+        show_legend(SCHOOL_LEGEND if report is not None else INPUT_LEGEND)
 
     if plan is not None:
         used = plan.scenario

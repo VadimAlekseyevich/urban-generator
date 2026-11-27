@@ -58,7 +58,7 @@ def test_demo_page_has_map_legend_units_and_confirmation() -> None:
     app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
     assert not app.exception
     assert app.title[0].value == "Urban Generator"
-    assert len(app.get("image")) == 1
+    assert len(app.get("bidi_component")) == 1
     assert any("CRS: EPSG:32637" in item.value for item in app.markdown)
     assert any("96×96 ячеек" in item.value and "960×960 м" in item.value for item in app.markdown)
     assert app.metric[0].value == "918400"
@@ -166,7 +166,7 @@ def test_invalid_upload_shows_russian_error_without_traceback(data: bytes, messa
     app = own_file_app(data)
     assert not app.exception
     assert message in app.error[0].value
-    assert not app.get("image")
+    assert not app.get("bidi_component")
     assert not app.dataframe
     assert app.session_state.terrain is None
     assert not app.session_state.terrain_ready
@@ -224,7 +224,7 @@ def test_generation_requires_confirmed_terrain() -> None:
     assert app.session_state.building_plan is None
 
 
-def test_demo_generation_shows_two_maps_and_keeps_scenario() -> None:
+def test_demo_generation_shows_viewer_and_keeps_scenario() -> None:
     from scipy.ndimage import generate_binary_structure, label
 
     app = generated_demo_app()
@@ -232,9 +232,8 @@ def test_demo_generation_shows_two_maps_and_keeps_scenario() -> None:
     terrain, roads, scenario = run.terrain, run.roads, run.scenario
     assert scenario.seed == 42
     assert scenario.street_spacing_cells == 8
-    assert len(app.get("image")) == 2
-    assert all(item.proto.imgs[0].url.endswith(".png") for item in app.get("image"))
-    assert any(item.value == "Проект" for item in app.subheader)
+    assert len(app.get("bidi_component")) == 1
+    assert any(item.value == "Карта территории" for item in app.subheader)
     assert any("4 — Новая улица" in item.value for item in app.markdown)
     assert roads.new_roads.any()
     assert not roads.new_roads[:, 56:].any()
@@ -283,12 +282,12 @@ def test_new_source_clears_the_previous_road_project() -> None:
     app = generated_demo_app()
     app.radio[0].set_value("Свой TIFF").run()
     assert app.session_state.building_plan is None
-    assert not app.get("image")
+    assert not app.get("bidi_component")
     app.file_uploader[0].set_value(("demo.tif", DEMO_PATH.read_bytes(), "image/tiff")).run()
     assert not app.exception
     assert app.session_state.building_plan is None
     assert app.button[0].disabled
-    assert len(app.get("image")) == 1
+    assert len(app.get("bidi_component")) == 1
 
 
 def test_local_scale_change_clears_project_and_blocks_new_run() -> None:
@@ -300,7 +299,7 @@ def test_local_scale_change_clears_project_and_blocks_new_run() -> None:
     assert not app.exception
     assert app.session_state.building_plan is None
     assert app.button[0].disabled
-    assert len(app.get("image")) == 1
+    assert len(app.get("bidi_component")) == 1
 
 
 def test_project_colors_and_scale_match_the_source_and_preserve_original_objects() -> None:
@@ -341,7 +340,7 @@ def test_failed_regeneration_keeps_last_successful_scenario(monkeypatch) -> None
     assert app.session_state.building_plan.scenario.seed == 42
     np.testing.assert_array_equal(app.session_state.building_plan.roads.new_roads, before)
     np.testing.assert_array_equal(app.session_state.building_plan.building_ids, building_ids_before)
-    assert len(app.get("image")) == 2
+    assert len(app.get("bidi_component")) == 1
 
 
 def test_occupied_map_displays_zero_new_roads_without_error() -> None:
@@ -351,7 +350,7 @@ def test_occupied_map_displays_zero_new_roads_without_error() -> None:
     assert not app.exception
     assert not app.error
     assert not app.session_state.building_plan.roads.new_roads.any()
-    assert len(app.get("image")) == 2
+    assert len(app.get("bidi_component")) == 1
     assert any("Нет достижимых свободных ячеек" in item.value for item in app.info)
     metrics = {item.label: item.value for item in app.metric}
     assert metrics["Новые дома, шт."] == "0"
@@ -620,7 +619,8 @@ def test_compare_budgets_and_download_completed_reports(monkeypatch):
     assert a.plan.scenario.school_budget == 1 and b.plan.scenario.school_budget == 0
     assert a.metrics.population == b.metrics.population == 608
     assert a.metrics.school_served > b.metrics.school_served == 0
-    assert len(app.get("image")) == 4
+    assert len(app.get("image")) == 2
+    assert len(app.get("bidi_component")) == 1
     np.testing.assert_array_equal(a.plan.building_ids, b.plan.building_ids)
     np.testing.assert_array_equal(a.plan.roads.new_roads, b.plan.roads.new_roads)
     frame = app.dataframe[-1].value.set_index("Показатель")
