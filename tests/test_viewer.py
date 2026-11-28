@@ -46,3 +46,32 @@ def test_payload_uses_actual_width_and_ids(report):
         assert payload["ids"][house.row*96+house.column] == f"house-{house.id}"
     assert payload["project"] == report.classes.ravel().tolist()
     assert viewer_payload(report.plan.terrain)["objects"] == {}
+
+
+def test_map_resources_are_utf8_even_with_cp1251_default(monkeypatch):
+    """Reproduce a Windows CP1251 default independently of the host locale."""
+    import runpy
+    import streamlit.components.v2 as components
+
+    root = Path(__file__).parents[1] / "urban" / "map_frontend"
+    original = Path.read_text
+    loaded = {}
+
+    def read_text(path, encoding=None, *args, **kwargs):
+        if path.parent == root:
+            loaded[path.name] = encoding
+            encoding = encoding or "cp1251"
+        return original(path, encoding, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    captured = {}
+
+    def component(name, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(components, "component", component)
+    runpy.run_path(str(root.parent / "map_ui.py"))
+    assert loaded == {"map.html": "utf-8", "map.css": "utf-8", "map.js": "utf-8"}
+    for argument, filename in (("html", "map.html"), ("css", "map.css"), ("js", "map.js")):
+        assert captured[argument] == original(root / filename, encoding="utf-8")
