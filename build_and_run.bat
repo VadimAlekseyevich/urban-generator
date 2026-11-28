@@ -45,6 +45,8 @@ if /I "%URBAN_OFFLINE%"=="1" (
     set "UV_FLAGS=--offline"
 )
 set "UV_NO_PROGRESS=1"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 > "%URBAN_LOG_DIR%\run-info.txt" echo mode=%MODE%
 >> "%URBAN_LOG_DIR%\run-info.txt" echo offline=%URBAN_OFFLINE%
 echo.
@@ -67,13 +69,13 @@ if errorlevel 1 (
     echo [URBAN] Git missing. Install Git or set URBAN_SKIP_PULL=1.
     goto :finish
 )
-git status --porcelain > "%URBAN_LOG_DIR%\git-status.log" 2>&1
+git status --porcelain --untracked-files=no > "%URBAN_LOG_DIR%\git-status.log" 2>&1
 if errorlevel 1 (
     call :show_log git-status.log
     goto :finish
 )
 for %%F in ("%URBAN_LOG_DIR%\git-status.log") do if not "%%~zF"=="0" (
-    echo [URBAN] Local changes detected. Commit or stash them, or set URBAN_SKIP_PULL=1.
+    echo [URBAN] Tracked changes detected. Commit or stash them, or set URBAN_SKIP_PULL=1.
     goto :finish
 )
 echo [URBAN] Updating checkout - fast-forward only...
