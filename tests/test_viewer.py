@@ -74,4 +74,4 @@ def test_map_resources_are_utf8_even_with_cp1251_default(monkeypatch):
     runpy.run_path(str(root.parent / "map_ui.py"))
     assert loaded == {"map.html": "utf-8", "map.css": "utf-8", "map.js": "utf-8"}
     for argument, filename in (("html", "map.html"), ("css", "map.css"), ("js", "map.js")):
-        assert captured[argument] == (root / filename).read_bytes().decode("utf-8")
+        assert captured[argument] == original(root / filename, encoding="utf-8")
